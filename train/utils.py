@@ -3,6 +3,8 @@ from typing import Callable
 import os
 import matplotlib.font_manager
 import torch
+import wandb
+import shutil
 import importlib
 import numpy as np
 
@@ -149,12 +151,12 @@ class BasicLogger:
         
         existent_files = sorted([os.path.join(self.logger_base, n) for n in os.listdir(self.logger_base)],
                                 key=lambda x: os.path.getmtime(x))
-        if self.kwargs.get("create_tensorboard", False):
-            from tensorboardX import SummaryWriter
-            self.tensorboard = SummaryWriter(self.logger_base)
+        if logger_name == "wandb": 
+            self.logger = self._wandb_logger
+            self.run = wandb.init(dir=os.path.dirname(self.logger_base), config=kwargs.get("wandb_init_config"))
         else:
-            for f in existent_files[-logger_queue_len:]:
-                self.logger_q.put(f)
+            for f in existent_files:
+                os.remove(f)
         
     def _image_logger(self, dict_of_images, path):
         ind_vis = {}
@@ -181,6 +183,7 @@ class BasicLogger:
                                                                               fname='/mnt/data/oss_beijing/dailinrui/data/resources/fonts/truetype/Arial-Unicode-Bold.ttf'))
         
         plt.savefig(path, dpi=300, bbox_inches="tight", pad_inches=0)
+        plt.close()
         
     def _nifti_logger(self, data, path):
         if not isinstance(data, np.ndarray):
@@ -194,18 +197,21 @@ class BasicLogger:
     def _tensorboard_logger(self, data, path):
         return self.tensorboard
     
+    def _wandb_logger(self, data, args):
+        wandb.log(data)
+    
     def _model_logger(self, data, path):
         torch.save(data, path)
         
     def log(self, data=None, suffix=None, ext=None):
-        if not self.kwargs.get("create_tensorboard", False):
+        if self.name != "wandb":
             path = os.path.join(self.logger_base, suffix)
             if ext is None: ext = '.'.join(suffix.split('.')[1:])
             assert len(ext) > 0 and suffix.endswith(ext)
         
             if self.logger_q.full():
                 outdate = self.logger_q.get()
-                os.remove(outdate)
+                if os.path.exists(outdate): os.remove(outdate)
             self.logger_q.put(path)
         else:
             path = None
@@ -214,17 +220,13 @@ class BasicLogger:
             self.logger = self._image_logger
         elif ext in ["nii.gz", "nii"]:
             self.logger = self._nifti_logger
-        elif ext == "tf":
-            self.logger = self._tensorboard_logger
         elif ext in ["pt", "ckpt", "pth"]:
             self.logger = self._model_logger
-        else:
-            self.logger = ext
         return self.logger(data, path)
 
     def __call__(self, data=None, suffix=None, ext=None):
         return self.log(data, suffix, ext) 
-    
+        
         
 class dummy_context:
     def __enter__(self):

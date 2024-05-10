@@ -1,5 +1,6 @@
 import sys, os
 import torch
+import wandb
 import torch.distributed
 import torch.nn as nn
 import torch.nn.functional as f
@@ -64,12 +65,12 @@ class Trainer:
                                   pin_memory=True,
                                   num_workers=2, collate_fn=self.test_ds.collate_fn)
         
-        self.logger = {"train": BasicLogger("train", 10, self.visualization_path),
-                       "val":   BasicLogger("val", 10, self.visualization_path),
-                       "test":  BasicLogger("test", 10, self.visualization_path), 
-                       "nifti": BasicLogger("nifti", 10, self.visualization_path),
-                       "tf":    BasicLogger("tboard", -1, self.snapshot_path, create_tensorboard=True),
-                       "model": BasicLogger("checkpoint", 5, self.snapshot_path)}
+        self.logger = {"train":     BasicLogger("train", 10, self.visualization_path),
+                       "val":       BasicLogger("val", 10, self.visualization_path),
+                       "test":      BasicLogger("test", 10, self.visualization_path), 
+                       "nifti":     BasicLogger("nifti", 10, self.visualization_path),
+                       "metrics":   BasicLogger("wandb", -1, self.snapshot_path, wandb_init_config=spec),
+                       "model":     BasicLogger("checkpoint", 5, self.snapshot_path)}
         
         self.optimizer = AdamW(self.model.parameters(), self.lr / self.batch_size)
         self.lr_scheduler = LinearLR(self.optimizer, start_factor=1, total_iters=self.max_epochs)
@@ -89,9 +90,6 @@ class Trainer:
         self.model, self.optimizer, self.train_dl, self.val_dl, self.lr_scheduler, self.lpips =\
             self.accelerator.prepare(self.model, self.optimizer, self.train_dl, self.val_dl, self.lr_scheduler, self.lpips)
         
-        self.loss = {CrossEntropyLoss(ignore_class=5): 0.,
-                     self.kl_loss: 0.5,
-                     self.lpips: 0.}
         print_parameters(model=self.model, lpips=self.lpips)
         self.train_vis_step = max(1, len(self.train_dl) // save_n_train_image_per_epoch)
         self.val_vis_step = max(1, len(self.val_dl) // save_n_val_image_per_epoch)
@@ -168,13 +166,14 @@ class Trainer:
             
             loss_diffusion = self.kl_loss(xt, x0, x0_pred, t)
             loss_ce = nn.functional.cross_entropy(c_pred, class_id)
-            # loss_l1 = nn.functional.l1_loss(x0, x0_pred)
-            loss = loss_diffusion
+            loss_l1 = nn.functional.l1_loss(x0, x0_pred)
+            loss = loss_l1
             itr_loss["DiffusionKLLoss"] = loss_diffusion
+            itr_loss["L1Loss_x0"] = loss_l1
             itr_loss["CrossEntropyLoss"] = loss_ce
             
             self.optimizer.zero_grad()
-            self.accelerator.backward(loss_diffusion)
+            self.accelerator.backward(loss)
             self.optimizer.step()
             if self.lr_scheduler is not None:
                 lr = self.lr_scheduler.get_last_lr()[0]
@@ -183,8 +182,12 @@ class Trainer:
             
             global_step = itr + len(self.train_dl) * self.epoch
             if self.accelerator.is_main_process:
-                self.logger["tf"](ext="tf").add_scalar("train/lr", lr, global_step)
-                self.logger["tf"](ext="tf").add_scalars("train/loss", {k: round(v.item(), 2) for k, v in itr_loss.items()}, global_step)
+                self.logger["metrics"]({"train/lr": lr,
+                                        "train/debug": x0_pred.argmax(1).max().item(),
+                                        "train/loss": loss.item(),
+                                        "train_diffusion_klloss": loss_diffusion.item(),
+                                        "train/l1loss": loss_l1.item(),
+                                        "train/crossentropyloss": loss_ce.item()})
             self.train_it.set_postfix(itr=global_step, **{k: f"{v.item():.2f}" for k, v in itr_loss.items()}, debug=x0_pred.argmax(1).max().item())
             self.train_it.update(1)
     
@@ -223,8 +226,9 @@ class Trainer:
             val_it.set_postfix(**{k: v / (itr + 1) for k, v in val_loss.items()})
             if not self.parallel_val: self.train_it.update(1)
             
-        self.logger["tf"](ext="tf").add_images("val/gen", visualize(x0_pred.argmax(1), n=len(self.legends) - 1), self.epoch)
-        for k, v in val_loss.items(): self.logger["tf"](ext="tf").add_scalar(f'val/unnormalized_{k}', v / len(self.val_dl), self.epoch)
+        # self.logger["metrics"](ext="tf").add_images("val/gen", visualize(x0_pred.argmax(1), n=len(self.legends) - 1), self.epoch)
+        # for k, v in val_loss.items(): 
+        #     self.logger["tf"](ext="tf").add_scalar(f'val/unnormalized_{k}', v / len(self.val_dl), self.epoch)
             
         if abs(new_best := val_loss["LPIPS"] / len(self.val_dl)) < self.best:
             print(f"best lpips for epoch {self.epoch}: {new_best:.2f}")
