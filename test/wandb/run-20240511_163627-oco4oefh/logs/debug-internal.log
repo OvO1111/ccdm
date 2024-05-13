@@ -1,0 +1,93 @@
+2024-05-11 16:36:27,341 INFO    StreamThr :47162 [internal.py:wandb_internal():85] W&B internal server running at pid: 47162, started at: 2024-05-11 16:36:27.338425
+2024-05-11 16:36:27,349 DEBUG   HandlerThread:47162 [handler.py:handle_request():158] handle_request: status
+2024-05-11 16:36:27,375 INFO    WriterThread:47162 [datastore.py:open_for_write():87] open: /ailab/user/dailinrui/code/ccdm/test/wandb/run-20240511_163627-oco4oefh/run-oco4oefh.wandb
+2024-05-11 16:36:27,378 DEBUG   SenderThread:47162 [sender.py:send():378] send: header
+2024-05-11 16:36:27,400 DEBUG   SenderThread:47162 [sender.py:send():378] send: run
+2024-05-11 16:36:32,402 DEBUG   HandlerThread:47162 [handler.py:handle_request():158] handle_request: keepalive
+2024-05-11 16:36:37,405 DEBUG   HandlerThread:47162 [handler.py:handle_request():158] handle_request: keepalive
+2024-05-11 16:36:42,407 DEBUG   HandlerThread:47162 [handler.py:handle_request():158] handle_request: keepalive
+2024-05-11 16:36:47,409 DEBUG   HandlerThread:47162 [handler.py:handle_request():158] handle_request: keepalive
+2024-05-11 16:36:52,411 DEBUG   HandlerThread:47162 [handler.py:handle_request():158] handle_request: keepalive
+2024-05-11 16:36:55,598 INFO    SenderThread:47162 [retry.py:__call__():172] Retry attempt failed:
+Traceback (most recent call last):
+  File "/ailab/user/dailinrui/.conda/envs/ccdm/lib/python3.11/site-packages/urllib3/connection.py", line 174, in _new_conn
+    conn = connection.create_connection(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/ailab/user/dailinrui/.conda/envs/ccdm/lib/python3.11/site-packages/urllib3/util/connection.py", line 72, in create_connection
+    for res in socket.getaddrinfo(host, port, family, socket.SOCK_STREAM):
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/ailab/user/dailinrui/.conda/envs/ccdm/lib/python3.11/socket.py", line 962, in getaddrinfo
+    for res in _socket.getaddrinfo(host, port, family, type, proto, flags):
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+socket.gaierror: [Errno -2] Name or service not known
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/ailab/user/dailinrui/.conda/envs/ccdm/lib/python3.11/site-packages/urllib3/connectionpool.py", line 703, in urlopen
+    httplib_response = self._make_request(
+                       ^^^^^^^^^^^^^^^^^^^
+  File "/ailab/user/dailinrui/.conda/envs/ccdm/lib/python3.11/site-packages/urllib3/connectionpool.py", line 386, in _make_request
+    self._validate_conn(conn)
+  File "/ailab/user/dailinrui/.conda/envs/ccdm/lib/python3.11/site-packages/urllib3/connectionpool.py", line 1042, in _validate_conn
+    conn.connect()
+  File "/ailab/user/dailinrui/.conda/envs/ccdm/lib/python3.11/site-packages/urllib3/connection.py", line 358, in connect
+    self.sock = conn = self._new_conn()
+                       ^^^^^^^^^^^^^^^^
+  File "/ailab/user/dailinrui/.conda/envs/ccdm/lib/python3.11/site-packages/urllib3/connection.py", line 186, in _new_conn
+    raise NewConnectionError(
+urllib3.exceptions.NewConnectionError: <urllib3.connection.HTTPSConnection object at 0x2b1beeb39990>: Failed to establish a new connection: [Errno -2] Name or service not known
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/ailab/user/dailinrui/.conda/envs/ccdm/lib/python3.11/site-packages/requests/adapters.py", line 489, in send
+    resp = conn.urlopen(
+           ^^^^^^^^^^^^^
+  File "/ailab/user/dailinrui/.conda/envs/ccdm/lib/python3.11/site-packages/urllib3/connectionpool.py", line 787, in urlopen
+    retries = retries.increment(
+              ^^^^^^^^^^^^^^^^^^
+  File "/ailab/user/dailinrui/.conda/envs/ccdm/lib/python3.11/site-packages/urllib3/util/retry.py", line 592, in increment
+    raise MaxRetryError(_pool, url, error or ResponseError(cause))
+urllib3.exceptions.MaxRetryError: HTTPSConnectionPool(host='api.wandb.ai', port=443): Max retries exceeded with url: /graphql (Caused by NewConnectionError('<urllib3.connection.HTTPSConnection object at 0x2b1beeb39990>: Failed to establish a new connection: [Errno -2] Name or service not known'))
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/ailab/user/dailinrui/.conda/envs/ccdm/lib/python3.11/site-packages/wandb/sdk/lib/retry.py", line 131, in __call__
+    result = self._call_fn(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/ailab/user/dailinrui/.conda/envs/ccdm/lib/python3.11/site-packages/wandb/sdk/internal/internal_api.py", line 340, in execute
+    return self.client.execute(*args, **kwargs)  # type: ignore
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/ailab/user/dailinrui/.conda/envs/ccdm/lib/python3.11/site-packages/wandb/vendor/gql-0.2.0/wandb_gql/client.py", line 52, in execute
+    result = self._get_result(document, *args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/ailab/user/dailinrui/.conda/envs/ccdm/lib/python3.11/site-packages/wandb/vendor/gql-0.2.0/wandb_gql/client.py", line 60, in _get_result
+    return self.transport.execute(document, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/ailab/user/dailinrui/.conda/envs/ccdm/lib/python3.11/site-packages/wandb/sdk/lib/gql_request.py", line 58, in execute
+    request = self.session.post(self.url, **post_args)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/ailab/user/dailinrui/.conda/envs/ccdm/lib/python3.11/site-packages/requests/sessions.py", line 635, in post
+    return self.request("POST", url, data=data, json=json, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/ailab/user/dailinrui/.conda/envs/ccdm/lib/python3.11/site-packages/requests/sessions.py", line 587, in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/ailab/user/dailinrui/.conda/envs/ccdm/lib/python3.11/site-packages/requests/sessions.py", line 701, in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/ailab/user/dailinrui/.conda/envs/ccdm/lib/python3.11/site-packages/requests/adapters.py", line 565, in send
+    raise ConnectionError(e, request=request)
+requests.exceptions.ConnectionError: HTTPSConnectionPool(host='api.wandb.ai', port=443): Max retries exceeded with url: /graphql (Caused by NewConnectionError('<urllib3.connection.HTTPSConnection object at 0x2b1beeb39990>: Failed to establish a new connection: [Errno -2] Name or service not known'))
+2024-05-11 16:36:57,412 DEBUG   HandlerThread:47162 [handler.py:handle_request():158] handle_request: keepalive
+2024-05-11 16:37:02,415 DEBUG   HandlerThread:47162 [handler.py:handle_request():158] handle_request: keepalive
+2024-05-11 16:37:07,417 DEBUG   HandlerThread:47162 [handler.py:handle_request():158] handle_request: keepalive
+2024-05-11 16:37:12,419 DEBUG   HandlerThread:47162 [handler.py:handle_request():158] handle_request: keepalive
+2024-05-11 16:37:17,420 DEBUG   HandlerThread:47162 [handler.py:handle_request():158] handle_request: keepalive
+2024-05-11 16:37:22,421 DEBUG   HandlerThread:47162 [handler.py:handle_request():158] handle_request: keepalive
+2024-05-11 16:37:27,423 DEBUG   HandlerThread:47162 [handler.py:handle_request():158] handle_request: keepalive
+2024-05-11 16:37:27,737 DEBUG   HandlerThread:47162 [handler.py:handle_request():158] handle_request: shutdown
+2024-05-11 16:37:27,737 INFO    HandlerThread:47162 [handler.py:finish():882] shutting down handler
+2024-05-11 16:37:28,411 INFO    WriterThread:47162 [datastore.py:close():296] close: /ailab/user/dailinrui/code/ccdm/test/wandb/run-20240511_163627-oco4oefh/run-oco4oefh.wandb

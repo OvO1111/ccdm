@@ -675,9 +675,9 @@ class TransformerDecoder(nn.Module):
                                               attn_layers=Decoder(dim=n_embed, depth=n_layer, causal=True))
         self.context_dim = n_embed * max_seq_len
 
-    def forward(self, tokens):
+    def forward(self, tokens, **kwargs):
         tokens = tokens.to(self.device)  # meh
-        z = self.transformer(tokens, return_embeddings=True, input_embeddings=True)
+        z = self.transformer(tokens, input_embeddings=False, return_embeddings=False, **kwargs)
         return z
     
     

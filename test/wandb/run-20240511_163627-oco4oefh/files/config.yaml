@@ -1,0 +1,106 @@
+wandb_version: 1
+
+dataset:
+  desc: null
+  value:
+    train:
+      target: datasets.ruijin.Ruijin_3D_Mask
+      params:
+        split: train
+        max_size: 5
+    validation:
+      target: datasets.ruijin.Ruijin_3D_Mask
+      params:
+        split: val
+        max_size: 1
+    test:
+      target: datasets.ruijin.Ruijin_3D_Mask
+      params:
+        split: test
+        max_size: 8
+model:
+  desc: null
+  value:
+    target: train.ccdm.CategoricalDiffusionModel
+    params:
+      train_ddim_sigmas: false
+      diffusion_model_spec:
+        schedule: cosine
+      denoising_model_spec:
+        unet:
+          target: ddpm.models.unet_openai.unet.UNetModel
+          params:
+            model_channels: 64
+            num_res_blocks: 2
+            cond_encoded_shape: null
+            num_heads: 1
+            num_head_channels: 32
+            channel_mult:
+            - 1
+            - 2
+            - 2
+            - 4
+            - 8
+            attention_resolutions:
+            - 32
+            - 16
+            - 8
+            use_checkpoint: true
+            dims: 3
+            use_spatial_transformer: true
+            transformer_depth: 1
+            context_dim: 5120
+            ce_head: false
+        params:
+          step_T_sample: majority
+encoder:
+  desc: null
+  value:
+    data_encoder: null
+    condition_encoder: null
+    context_encoder:
+      target: ddpm.models.encoder.AbstractEncoder
+      params: null
+trainer:
+  desc: null
+  value:
+    target: train.trainer.Trainer
+    params:
+      batch_size: 1
+      max_epochs: 50
+      timesteps: 1000
+      lr: 0.0001
+      snapshot_path: /ailab/user/dailinrui/code/ccdm/test
+_wandb:
+  desc: null
+  value:
+    python_version: 3.11.9
+    cli_version: 0.17.0
+    framework: huggingface
+    huggingface_version: 4.40.2
+    is_jupyter_run: false
+    is_kaggle_kernel: false
+    start_time: 1715416587
+    t:
+      1:
+      - 1
+      - 2
+      - 3
+      - 10
+      - 11
+      - 41
+      - 48
+      - 49
+      - 51
+      - 55
+      - 63
+      - 71
+      3:
+      - 16
+      - 23
+      4: 3.11.9
+      5: 0.17.0
+      6: 4.40.2
+      8:
+      - 5
+      13: linux-x86_64

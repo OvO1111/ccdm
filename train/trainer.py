@@ -7,15 +7,17 @@ import torch.nn.functional as f
 
 from tqdm import tqdm
 from omegaconf import OmegaConf
+from functools import reduce
 from accelerate import Accelerator, DistributedDataParallelKwargs
+from accelerate.tracking import WandBTracker
 from torch.optim import AdamW, SGD
 from torch.optim.lr_scheduler import LinearLR, LambdaLR
 from torch.utils.data import Dataset, DataLoader
 
 sys.path.append("/mnt/workspace/dailinrui/code/multimodal/trajectory_generation/ccdm")
-from train.utils import default, identity, maybe_mkdir, get_cls_from_pkg, visualize, print_parameters, BasicLogger, make_tabulate_data_from_nested_dict
+from train.utils import default, identity, maybe_mkdir, get_cls_from_pkg, print_parameters, BasicLogger, make_tabulate_data_from_nested_dict
 from train.ccdm import CategoricalDiffusionModel, OneHotCategoricalBCHW
-from train.loss import DiffusionKLLoss, CrossEntropyLoss, LPIPS
+from train.loss import DiffusionKLLoss, CrossEntropyLoss, LPIPS, TextRecoverModule
 from train.eval_metrics import pretrained_lpips, pretrained_fvd, pretrained_seg
 
 
@@ -30,8 +32,8 @@ class Trainer:
                  timesteps=1000,
                  snapshot_path=None,
                  restore_path=None,
-                 parallel_validation=False,
-                 val_every=1, save_every=5,
+                 val_every=1, 
+                 save_every=5,
                  save_n_train_image_per_epoch=10,
                  save_n_val_image_per_epoch=5) -> None:
         self.lr = lr
@@ -40,7 +42,6 @@ class Trainer:
         self.timesteps = timesteps
         self.val_every = val_every
         self.save_every = save_every
-        self.parallel_val = parallel_validation
         self.snapshot_path = maybe_mkdir(snapshot_path)
         
         self.best = 1e6
@@ -50,8 +51,6 @@ class Trainer:
         self.model_path = maybe_mkdir(os.path.join(self.snapshot_path, "model"))
         self.tensorboard_path = maybe_mkdir(os.path.join(self.snapshot_path, "logs"))
         self.visualization_path = maybe_mkdir(os.path.join(self.snapshot_path, "visual"))
-
-        self.val_proc = None
         
         self.train_dl = DataLoader(self.train_ds,
                                    self.batch_size,
@@ -69,15 +68,19 @@ class Trainer:
                        "val":       BasicLogger("val", 10, self.visualization_path),
                        "test":      BasicLogger("test", 10, self.visualization_path), 
                        "nifti":     BasicLogger("nifti", 10, self.visualization_path),
-                       "metrics":   BasicLogger("wandb", -1, self.snapshot_path, wandb_init_config=spec),
+                       "metrics":   BasicLogger("wandb", -1, self.snapshot_path),
                        "model":     BasicLogger("checkpoint", 5, self.snapshot_path)}
         
         self.optimizer = AdamW(self.model.parameters(), self.lr / self.batch_size)
         self.lr_scheduler = LinearLR(self.optimizer, start_factor=1, total_iters=self.max_epochs)
         if restore_path is not None: self.model.load_state_dict(torch.load(restore_path, map_location='cpu'))
         
-        self.accelerator = Accelerator(project_dir=self.snapshot_path, 
-                                       kwargs_handlers=[DistributedDataParallelKwargs(find_unused_parameters=True)])
+        self.accelerator = Accelerator(project_dir=self.snapshot_path, )
+                                       #  kwargs_handlers=[DistributedDataParallelKwargs(find_unused_parameters=True)])
+        WandB = WandBTracker(os.path.basename(self.snapshot_path), 
+                             dir=os.path.dirname(self.snapshot_path),
+                             config=spec)
+        
         self.device = self.accelerator.device
         self.val_device = torch.device("cuda", int(val_device)) if val_device is not None else self.device
         self.lpips = LPIPS(1, 1,
@@ -85,10 +88,11 @@ class Trainer:
                            ndim=self.model.unet.dims,
                            model_path="/mnt/workspace/dailinrui/data/pretrained/ccdm/lpips_backbone_best.ckpt",
                            net_backbone="colon_segmentation")
+        self.recover_loss = TextRecoverModule(n_embed=256, n_layer=2, image_in_size=self.model.denoising_model.unet.fc_in)
         self.kl_loss = DiffusionKLLoss(attn_weight=torch.tensor(self.train_ds.cls_weight, device=self.device),
                                      diffusion_model=self.accelerator.unwrap_model(self.model).diffusion_model)
-        self.model, self.optimizer, self.train_dl, self.val_dl, self.lr_scheduler, self.lpips =\
-            self.accelerator.prepare(self.model, self.optimizer, self.train_dl, self.val_dl, self.lr_scheduler, self.lpips)
+        self.model, self.optimizer, self.train_dl, self.val_dl, self.lr_scheduler, self.lpips, self.recover_loss =\
+            self.accelerator.prepare(self.model, self.optimizer, self.train_dl, self.val_dl, self.lr_scheduler, self.lpips, self.recover_loss)
         
         print_parameters(model=self.model, lpips=self.lpips)
         self.train_vis_step = max(1, len(self.train_dl) // save_n_train_image_per_epoch)
@@ -113,8 +117,7 @@ class Trainer:
         
     def train(self):
         self.model.train()
-        if self.parallel_val: self.train_it = tqdm(range(self.max_epochs * len(self.train_ds)), desc="train progress")
-        else: self.train_it = tqdm(range(self.max_epochs * (len(self.train_ds) + len(self.val_ds))), desc="train progress")
+        self.train_it = tqdm(range(self.max_epochs * len(self.train_ds)), desc="train progress")
         
         for self.epoch in range(self.max_epochs):
             self._train()
@@ -123,22 +126,15 @@ class Trainer:
             self.accelerator.wait_for_everyone()
             if self.accelerator.is_main_process:
                 if self.epoch % self.val_every == 0:
-                    if self.parallel_val:
-                        if self.val_proc is not None: 
-                            try:
-                                self.val_proc.join()
-                            except Exception as e: print(e)  # noqa: may report error when parallel validating because tensorboard is not closed properly
-                        self.val_proc = torch.multiprocessing.get_context("spawn").Process(target=self.val, args=(0, self.model.state_dict()))
-                        self.val_proc.start()
-                    else:
-                        self.val()
+                    self.val()
                 
                 if self.epoch & self.save_every == 0:
                     self.logger["model"](dict(lpips_model=self.accelerator.unwrap_model(self.lpips).state_dict(),
                                             model=self.accelerator.unwrap_model(self.model).state_dict(),
                                             optimizer=self.optimizer.state_dict(),
                                             epoch=self.epoch), f"checkpoint_ep{self.epoch}_gs{self.train_it.n}.ckpt")
-                    
+        
+        self.accelerator.wait_for_everyone()
         self.logger["model"](dict(lpips_model=self.accelerator.unwrap_model(self.lpips).state_dict(),
                                     model=self.accelerator.unwrap_model(self.model).state_dict(),
                                     epoch=self.epoch), f"last.ckpt")
@@ -146,9 +142,11 @@ class Trainer:
             
     def _train(self, callbacks=None):
         self.model.train()
+        self.recover_loss.train()
         for itr, batch in enumerate(self.train_dl):
             itr_loss = {}
             x0, condition, context, class_id = map(lambda attr: None if not batch.__contains__(attr) else batch[attr].to(self.device), ["mask", "image", "context", "class"])
+            text = batch.get("text")
             
             x0 = self.x_encoder(x0).float()
             t = torch.multinomial(torch.arange(self.timesteps + 1, device=self.device) ** 1.5, self.batch_size)
@@ -166,11 +164,14 @@ class Trainer:
             
             loss_diffusion = self.kl_loss(xt, x0, x0_pred, t)
             loss_ce = nn.functional.cross_entropy(c_pred, class_id)
-            loss_l1 = nn.functional.l1_loss(x0, x0_pred)
-            loss = loss_l1
+            # loss_l1 = nn.functional.l1_loss(x0, x0_pred)
+            loss_recover, recovered_text = self.recover_loss(ret["middle_block"].contiguous().view(x0_pred.shape[0], -1), text)
+            
+            loss = loss_diffusion + loss_recover * 10
             itr_loss["DiffusionKLLoss"] = loss_diffusion
-            itr_loss["L1Loss_x0"] = loss_l1
+            # itr_loss["L1Loss_x0"] = loss_l1
             itr_loss["CrossEntropyLoss"] = loss_ce
+            itr_loss["TextRecoverLoss"] = loss_recover * 10
             
             self.optimizer.zero_grad()
             self.accelerator.backward(loss)
@@ -186,9 +187,10 @@ class Trainer:
                                         "train/debug": x0_pred.argmax(1).max().item(),
                                         "train/loss": loss.item(),
                                         "train_diffusion_klloss": loss_diffusion.item(),
-                                        "train/l1loss": loss_l1.item(),
+                                        "train/recloss": loss_recover.item(),
+                                        # "train/l1loss": loss_l1.item(),
                                         "train/crossentropyloss": loss_ce.item()})
-            self.train_it.set_postfix(itr=global_step, **{k: f"{v.item():.2f}" for k, v in itr_loss.items()}, debug=x0_pred.argmax(1).max().item())
+            self.train_it.set_postfix(itr=global_step, **{k: f"{v.item():.2f}" for k, v in itr_loss.items()}, recovered_text=recovered_text, debug=x0_pred.argmax(1).max().item())
             self.train_it.update(1)
     
     def val(self, state_dict=None):
@@ -224,11 +226,7 @@ class Trainer:
                                         samples=x0_pred.argmax(1),), f"val_ep{self.epoch}_gs{getattr(self.train_it, 'n', -1)}.png")
             
             val_it.set_postfix(**{k: v / (itr + 1) for k, v in val_loss.items()})
-            if not self.parallel_val: self.train_it.update(1)
-            
-        # self.logger["metrics"](ext="tf").add_images("val/gen", visualize(x0_pred.argmax(1), n=len(self.legends) - 1), self.epoch)
-        # for k, v in val_loss.items(): 
-        #     self.logger["tf"](ext="tf").add_scalar(f'val/unnormalized_{k}', v / len(self.val_dl), self.epoch)
+            self.train_it.update(1)
             
         if abs(new_best := val_loss["LPIPS"] / len(self.val_dl)) < self.best:
             print(f"best lpips for epoch {self.epoch}: {new_best:.2f}")

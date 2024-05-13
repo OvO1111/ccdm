@@ -1,11 +1,14 @@
 import sys, os
-sys.path.append("/mnt/workspace/dailinrui/code/multimodal/trajectory_generation/ccdm")
+sys.path.append("/ailab/user/dailinrui/code/ccdm")
 import torch
 import torch.nn as nn
 import torch.nn.functional as f
 
+import numpy as np
 from tqdm import tqdm
+from transformers import AutoTokenizer
 from train.utils import check_loss, get_cls_from_pkg, dummy_context, clip_loss
+from train.x_transformer import TransformerDecoder
 
 
 class CrossEntropyLoss(nn.Module):
@@ -87,6 +90,32 @@ class DiceLoss(nn.Module):
             loss += dice * weight[i]
         return loss / self.n_classes
     
+
+class TextRecoverModule(nn.Module):
+    token_start_id = 1  # <s>
+    token_end_id = 2    # </s>
+    def __init__(self, n_embed, n_layer, image_in_size=None, vocab_size=103171, max_seq_len=16, device="cuda"):
+        super().__init__()
+        self.tokenizer = AutoTokenizer.from_pretrained("/ailab/user/dailinrui/data/dependency/OpenMEDLab_PULSE-20bv5_tokenizer/",
+                                                       local_files_only=True, trust_remote_code=True)
+        self.device = device
+        self.max_seq_len = max_seq_len
+        self.loss = nn.CrossEntropyLoss()
+        self.proj_in = nn.Linear(int(image_in_size), n_embed)
+        self.decoder = TransformerDecoder(n_embed, n_layer, vocab_size, max_seq_len, device).to(device)
+        
+    def forward(self, inputs, target):
+        target_t = torch.tensor([iid + [self.tokenizer.convert_tokens_to_ids("</s>")] for iid in self.tokenizer(target).input_ids], device=self.device)
+        b, *shp = target_t.shape
+        
+        ids = torch.randint(1, target_t.shape[-1], (1,))
+        token_t = target_t[:, -(target_t.shape[-1]-ids)-self.max_seq_len-1:ids]
+        decode_t = self.decoder(token_t, context=inputs)[:, -1]
+        
+        loss = self.loss(decode_t, target_t[:, ids].flatten()) / b
+        out_str = ["".join(self.tokenizer.convert_ids_to_tokens(target_t[ib, 1:ids]) + [" > "] + self.tokenizer.convert_ids_to_tokens(decode_t.argmax(-1))) for ib in range(b)]
+        return loss, out_str
+    
     
 class LPIPS(nn.Module):
     backbones = {"lpips": {"target": "monai.networks.nets.dynunet.DynUNet",
@@ -164,7 +193,7 @@ class LPIPS(nn.Module):
         lpips_metric = sum(lpips).sum()
         return lpips_metric
     
-    def train(self, max_ep):
+    def _train(self, max_ep):
         from torch.optim import SGD
         from torch.utils.data import DataLoader
         from segmentation.colon_segmentation import ColonSegmentation
@@ -213,6 +242,6 @@ class LPIPS(nn.Module):
             
             
 if __name__ == "__main__":
-    lpips = LPIPS(1, 1, is_training=True)
-    lpips.train(1000)
+    rec = TextRecoverModule(5120, 1, 1024).cuda()
+    rec(torch.randn((1, 4, 5120)).cuda(), ['肠癌位置：降结肠下段、降结肠末端、乙状结肠'])
     

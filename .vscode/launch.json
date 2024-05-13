@@ -4,14 +4,25 @@
     // 欲了解更多信息，请访问: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
+
         {
             "name": "debug run training ccdm",
             "type": "debugpy",
             "request": "launch",
-            "program": "run_trainer.py",
+            "program": "main.py",
             "args": [],
             "purpose": ["debug-in-terminal"],
             "console": "integratedTerminal"
-        }
+        },
+        {
+            "name": "debug this file",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "args": [],
+            "purpose": ["debug-in-terminal"],
+            "console": "integratedTerminal"
+        },
+
     ]
 }

@@ -1,16 +1,16 @@
 dataset:
   train:
-    target: datasets.ruijin.PretrainDataset
+    target: datasets.ruijin.Ruijin_3D_Mask
     params:
       split: train
-      max_size: 5
+      max_size: null
   validation:
-    target: datasets.ruijin.PretrainDataset
+    target: datasets.ruijin.Ruijin_3D_Mask
     params:
       split: val
-      max_size: 1
+      max_size: 10
   test:
-    target: datasets.ruijin.PretrainDataset
+    target: datasets.ruijin.Ruijin_3D_Mask
     params:
       split: test
       max_size: 8
@@ -55,5 +55,4 @@ trainer:
     max_epochs: 50
     timesteps: 1000
     lr: 1e-4
-    snapshot_path: /mnt/workspace/dailinrui/data/pretrained/ccdm/trainer_v2/test
-    parallel_validation: false
+    snapshot_path: /ailab/user/dailinrui/data/ccdm/test

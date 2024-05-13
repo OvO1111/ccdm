@@ -4,7 +4,6 @@ import numpy as np
 
 from einops import rearrange, repeat
 from train.metrics.lpips import LPIPS
-from train.metrics.fvd import Embedder, compute_fvd
 from monai.networks.nets.unet import UNet
 from scipy.ndimage import binary_dilation, distance_transform_edt
 
@@ -41,6 +40,7 @@ class pretrained_lpips(pretrained_metrics):
 
 class pretrained_fvd(pretrained_metrics):
     def __init__(self, bs=8, device=0):
+        from train.metrics.fvd import Embedder, compute_fvd
         super().__init__()
         self.bs = bs
         self.xs = []

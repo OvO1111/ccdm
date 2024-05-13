@@ -744,9 +744,9 @@ class UNetModel(nn.Module):
         
         last_layer_chn = self.model_channels * self.channel_mult[-1]
         spatial_chn = round(np.prod(self.spatial_size)/(2**(self.dims*(len(self.channel_mult)-1))))
-        fc_in = last_layer_chn * spatial_chn
+        self.fc_in = last_layer_chn * spatial_chn
         self.bn = nn.BatchNorm3d(last_layer_chn)
-        self.fc = nn.Sequential(nn.Linear(in_features=fc_in, out_features=64),
+        self.fc = nn.Sequential(nn.Linear(in_features=self.fc_in, out_features=64),
                                 nn.ReLU(),
                                 nn.Linear(64, 6),)
 
@@ -817,6 +817,7 @@ class UNetModel(nn.Module):
             hs.append(h)
 
         h = self.middle_block(h, emb, context)
+        hm = h
         ## add control loss to h
         c = self.fc(self.bn(h).contiguous().view(h.shape[0], -1))
 
@@ -826,7 +827,7 @@ class UNetModel(nn.Module):
         h = h.type(x.dtype)
 
         # output handling
-        ret = {"diffusion_out": None, "logits": None, "cond_pred_logits": c}
+        ret = {"diffusion_out": None, "logits": None, "cond_pred_logits": c, "middle_block": hm}
         diffusion_out = self.out(h)
         ret["diffusion_out"] = diffusion_out
         if self.out_ce is not None:

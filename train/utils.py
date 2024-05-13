@@ -86,7 +86,7 @@ def visualize(image: torch.Tensor, n: int=11, num_images=8):
 
     if image.dtype == torch.long:
         cmap = get_cmap("viridis")
-        rgb = torch.tensor([(0, 0, 0)] + [cmap(i)[:-1] for i in np.arange(0.3, n) / n])
+        rgb = torch.tensor([(0, 0, 0)] + [cmap(i)[:-1] for i in np.arange(0.3, n) / n], device=image.device)
         colored_mask = rearrange(rgb[image][0], "i j n -> 1 n i j")
         return colored_mask
     else:
@@ -153,10 +153,6 @@ class BasicLogger:
                                 key=lambda x: os.path.getmtime(x))
         if logger_name == "wandb": 
             self.logger = self._wandb_logger
-            self.run = wandb.init(dir=os.path.dirname(self.logger_base), config=kwargs.get("wandb_init_config"))
-        else:
-            for f in existent_files:
-                os.remove(f)
         
     def _image_logger(self, dict_of_images, path):
         ind_vis = {}
@@ -176,11 +172,11 @@ class BasicLogger:
             if isinstance(v, np.ndarray):
                 ax.imshow(rearrange(v, "c h w -> h w c"))
             if isinstance(v, str):
-                ax.imshow(np.zeros((10, 10)))
+                ax.imshow(np.zeros((5, 10)))
                 ax.text(0, 0, "\n".join([v[i * 20: (i + 1) * 20] for i in range(np.ceil(len(v) / 20).astype(int))]),
                         color="white",
                         fontproperties=matplotlib.font_manager.FontProperties(size=5,
-                                                                              fname='/mnt/data/oss_beijing/dailinrui/data/resources/fonts/truetype/Arial-Unicode-Bold.ttf'))
+                                                                              fname='/ailab/user/dailinrui/data/dependency/Arial-Unicode-Bold.ttf'))
         
         plt.savefig(path, dpi=300, bbox_inches="tight", pad_inches=0)
         plt.close()
@@ -202,7 +198,7 @@ class BasicLogger:
     
     def _model_logger(self, data, path):
         torch.save(data, path)
-        
+    
     def log(self, data=None, suffix=None, ext=None):
         if self.name != "wandb":
             path = os.path.join(self.logger_base, suffix)
