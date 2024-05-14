@@ -151,8 +151,6 @@ class BasicLogger:
         
         existent_files = sorted([os.path.join(self.logger_base, n) for n in os.listdir(self.logger_base)],
                                 key=lambda x: os.path.getmtime(x))
-        if logger_name == "wandb": 
-            self.logger = self._wandb_logger
         
     def _image_logger(self, dict_of_images, path):
         ind_vis = {}
@@ -161,7 +159,7 @@ class BasicLogger:
             elif isinstance(v, str): ind_vis[str(k)] = v
         h = max([getattr(x, "shape", [0, 0, 0])[1] for x in ind_vis.values()])
         w = sum([getattr(x, "shape", [0, 0, 0])[2] for x in ind_vis.values()])
-        fig = plt.figure(figsize=(minmax(w // 1024, 15, 30), minmax(h // 1024, 5, 10)))
+        fig = plt.figure(figsize=(minmax(w // 1024, 15, 30), minmax(h // 1024, 5, 10)), dpi=300)
         for i, (k, v) in enumerate(ind_vis.items()):
             ax = fig.add_subplot(1, len(dict_of_images), i + 1)
             ax.set_title(k)
@@ -179,7 +177,10 @@ class BasicLogger:
                                                                               fname='/ailab/user/dailinrui/data/dependency/Arial-Unicode-Bold.ttf'))
         
         plt.savefig(path, dpi=300, bbox_inches="tight", pad_inches=0)
-        plt.close()
+        image_from_plt = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+        image_from_plt = image_from_plt.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+        plt.close(fig)
+        return image_from_plt
         
     def _nifti_logger(self, data, path):
         if not isinstance(data, np.ndarray):
@@ -189,28 +190,19 @@ class BasicLogger:
         image = sitk.GetImageFromArray(data)
         image.SetSpacing(self.kwargs.get("spacing", (1, 1, 1)))
         sitk.WriteImage(image, path)
-        
-    def _tensorboard_logger(self, data, path):
-        return self.tensorboard
-    
-    def _wandb_logger(self, data, args):
-        wandb.log(data)
     
     def _model_logger(self, data, path):
         torch.save(data, path)
     
     def log(self, data=None, suffix=None, ext=None):
-        if self.name != "wandb":
-            path = os.path.join(self.logger_base, suffix)
-            if ext is None: ext = '.'.join(suffix.split('.')[1:])
-            assert len(ext) > 0 and suffix.endswith(ext)
-        
-            if self.logger_q.full():
-                outdate = self.logger_q.get()
-                if os.path.exists(outdate): os.remove(outdate)
-            self.logger_q.put(path)
-        else:
-            path = None
+        path = os.path.join(self.logger_base, suffix)
+        if ext is None: ext = '.'.join(suffix.split('.')[1:])
+        assert len(ext) > 0 and suffix.endswith(ext)
+    
+        if self.logger_q.full():
+            outdate = self.logger_q.get()
+            if os.path.exists(outdate): os.remove(outdate)
+        self.logger_q.put(path)
                 
         if ext in ["png", "jpg"]:
             self.logger = self._image_logger

@@ -109,7 +109,7 @@ class TextRecoverModule(nn.Module):
         b, *shp = target_t.shape
         
         ids = torch.randint(1, target_t.shape[-1], (1,))
-        token_t = target_t[:, -(target_t.shape[-1]-ids)-self.max_seq_len-1:ids]
+        token_t = target_t[:, -(target_t.shape[-1]-ids-1)-self.max_seq_len-1:ids]
         decode_t = self.decoder(token_t, context=inputs)[:, -1]
         
         loss = self.loss(decode_t, target_t[:, ids].flatten()) / b

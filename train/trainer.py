@@ -5,11 +5,9 @@ import torch.distributed
 import torch.nn as nn
 import torch.nn.functional as f
 
-from tqdm import tqdm
 from omegaconf import OmegaConf
-from functools import reduce
 from accelerate import Accelerator, DistributedDataParallelKwargs
-from accelerate.tracking import WandBTracker
+from accelerate.utils import tqdm
 from torch.optim import AdamW, SGD
 from torch.optim.lr_scheduler import LinearLR, LambdaLR
 from torch.utils.data import Dataset, DataLoader
@@ -68,18 +66,18 @@ class Trainer:
                        "val":       BasicLogger("val", 10, self.visualization_path),
                        "test":      BasicLogger("test", 10, self.visualization_path), 
                        "nifti":     BasicLogger("nifti", 10, self.visualization_path),
-                       "metrics":   BasicLogger("wandb", -1, self.snapshot_path),
                        "model":     BasicLogger("checkpoint", 5, self.snapshot_path)}
         
         self.optimizer = AdamW(self.model.parameters(), self.lr / self.batch_size)
         self.lr_scheduler = LinearLR(self.optimizer, start_factor=1, total_iters=self.max_epochs)
         if restore_path is not None: self.model.load_state_dict(torch.load(restore_path, map_location='cpu'))
         
-        self.accelerator = Accelerator(project_dir=self.snapshot_path, )
-                                       #  kwargs_handlers=[DistributedDataParallelKwargs(find_unused_parameters=True)])
-        WandB = WandBTracker(os.path.basename(self.snapshot_path), 
-                             dir=os.path.dirname(self.snapshot_path),
-                             config=spec)
+        self.accelerator = Accelerator(project_dir=self.snapshot_path,
+                                       kwargs_handlers=[DistributedDataParallelKwargs(find_unused_parameters=True)],
+                                       log_with="wandb")
+        self.accelerator.init_trackers(project_name=os.path.basename(self.snapshot_path),
+                                       config=spec,
+                                       init_kwargs={"wandb": {"entity": "WinkyWinky", "dir": os.path.dirname(self.snapshot_path)}})
         
         self.device = self.accelerator.device
         self.val_device = torch.device("cuda", int(val_device)) if val_device is not None else self.device
@@ -156,21 +154,16 @@ class Trainer:
                              context=self.context_encoder(context))
             c_pred = ret["cond_pred_logits"]
             x0_pred = ret["diffusion_out"]
-            if itr % self.train_vis_step == 0 and self.accelerator.is_main_process:
-                self.logger["train"](dict(inputs=x0.argmax(1),
-                                            xt=xt.argmax(1),
-                                            t=str(t.cpu().numpy().tolist()),
-                                            samples=x0_pred.argmax(1)), f"train_ep{self.epoch}_gs{self.train_it.n}.png")
             
             loss_diffusion = self.kl_loss(xt, x0, x0_pred, t)
             loss_ce = nn.functional.cross_entropy(c_pred, class_id)
             # loss_l1 = nn.functional.l1_loss(x0, x0_pred)
             loss_recover, recovered_text = self.recover_loss(ret["middle_block"].contiguous().view(x0_pred.shape[0], -1), text)
             
-            loss = loss_diffusion + loss_recover * 10
+            loss = loss_diffusion + loss_recover * 10 + loss_ce * 10
             itr_loss["DiffusionKLLoss"] = loss_diffusion
             # itr_loss["L1Loss_x0"] = loss_l1
-            itr_loss["CrossEntropyLoss"] = loss_ce
+            itr_loss["CrossEntropyLoss"] = loss_ce * 10
             itr_loss["TextRecoverLoss"] = loss_recover * 10
             
             self.optimizer.zero_grad()
@@ -182,16 +175,24 @@ class Trainer:
             else: lr = self.optimizer.defaults['lr']
             
             global_step = itr + len(self.train_dl) * self.epoch
+            self.accelerator.wait_for_everyone()
             if self.accelerator.is_main_process:
-                self.logger["metrics"]({"train/lr": lr,
-                                        "train/debug": x0_pred.argmax(1).max().item(),
-                                        "train/loss": loss.item(),
-                                        "train_diffusion_klloss": loss_diffusion.item(),
-                                        "train/recloss": loss_recover.item(),
-                                        # "train/l1loss": loss_l1.item(),
-                                        "train/crossentropyloss": loss_ce.item()})
-            self.train_it.set_postfix(itr=global_step, **{k: f"{v.item():.2f}" for k, v in itr_loss.items()}, recovered_text=recovered_text, debug=x0_pred.argmax(1).max().item())
-            self.train_it.update(1)
+                if itr % self.train_vis_step == 0:
+                    wandb_tracker = self.accelerator.get_tracker("wandb", unwrap=True)
+                    image = self.logger["train"](dict(inputs=x0.argmax(1),
+                                                        xt=xt.argmax(1),
+                                                        t=str(t.cpu().numpy().tolist()),
+                                                        samples=x0_pred.argmax(1)), f"train_ep{self.epoch}_gs{self.train_it.n}.png")
+                    wandb_tracker.log({"train/image": wandb.Image(image)}, step=global_step)
+                self.accelerator.log({"train/lr": lr,
+                                    "train/debug": x0_pred.argmax(1).max().item(),
+                                    "train/loss": loss.item(),
+                                    "train_diffusion_klloss": loss_diffusion.item(),
+                                    "train/recloss": loss_recover.item(),
+                                    # "train/l1loss": loss_l1.item(),
+                                    "train/crossentropyloss": loss_ce.item()}, step=global_step)
+                self.train_it.set_postfix(itr=global_step, **{k: f"{v.item():.2f}" for k, v in itr_loss.items()}, recovered_text=recovered_text, debug=x0_pred.argmax(1).max().item())
+                self.train_it.update(self.accelerator.num_processes)
     
     def val(self, state_dict=None):
         model = self.accelerator.unwrap_model(self.model)
