@@ -30,8 +30,9 @@ class DiffusionKLLoss(nn.Module):
         self.attn_weight = attn_weight
     
     def forward(self, xt, x0, x0_pred, t, **kwargs):
-        prob_xtm1_given_xt_x0 = self.diffusion_model.theta_post(xt, x0, t)
-        prob_xtm1_given_xt_x0pred = self.diffusion_model.theta_post_prob(xt, x0_pred, t)
+        noise = kwargs.get("noise", None)
+        prob_xtm1_given_xt_x0 = self.diffusion_model.theta_post(xt, x0, t, noise)
+        prob_xtm1_given_xt_x0pred = self.diffusion_model.theta_post_prob(xt, x0_pred, t, noise)
         
         loss = nn.functional.kl_div(
             torch.log(torch.clamp(prob_xtm1_given_xt_x0pred, min=1e-12)),
@@ -94,14 +95,16 @@ class DiceLoss(nn.Module):
 class TextRecoverModule(nn.Module):
     token_start_id = 1  # <s>
     token_end_id = 2    # </s>
-    def __init__(self, n_embed, n_layer, image_in_size=None, vocab_size=103171, max_seq_len=16, device="cuda"):
+    def __init__(self, n_embed, n_layer, losstype="kl",
+                 image_in_size=None, vocab_size=103171, max_seq_len=16, device="cuda"):
         super().__init__()
         self.tokenizer = AutoTokenizer.from_pretrained("/ailab/user/dailinrui/data/dependency/OpenMEDLab_PULSE-20bv5_tokenizer/",
                                                        local_files_only=True, trust_remote_code=True)
         self.device = device
+        self.losstype = losstype
         self.max_seq_len = max_seq_len
-        self.loss = nn.CrossEntropyLoss()
         self.proj_in = nn.Linear(int(image_in_size), n_embed)
+        self.loss = nn.CrossEntropyLoss() if losstype == "ce" else nn.KLDivLoss(reduction="batchmean")
         self.decoder = TransformerDecoder(n_embed, n_layer, vocab_size, max_seq_len, device).to(device)
         
     def forward(self, inputs, target):
@@ -110,10 +113,11 @@ class TextRecoverModule(nn.Module):
         
         ids = torch.randint(1, target_t.shape[-1], (1,))
         token_t = target_t[:, -(target_t.shape[-1]-ids-1)-self.max_seq_len-1:ids]
-        decode_t = self.decoder(token_t, context=inputs)[:, -1]
+        decode_t = self.decoder(token_t, context=inputs)
+        target_dt = target_t[:, ids+1-decode_t.shape[1]: ids + 1]
         
-        loss = self.loss(decode_t, target_t[:, ids].flatten()) / b
-        out_str = ["".join(self.tokenizer.convert_ids_to_tokens(target_t[ib, 1:ids]) + [" > "] + self.tokenizer.convert_ids_to_tokens(decode_t.argmax(-1))) for ib in range(b)]
+        loss = self.loss(decode_t, target_dt) / b if self.losstype == "ce" else self.loss(decode_t.softmax(-1), target_dt) / b
+        out_str = ["".join(self.tokenizer.convert_ids_to_tokens(target_dt[ib]) + [" > "] + self.tokenizer.convert_ids_to_tokens(decode_t.argmax(-1))) for ib in range(b)]
         return loss, out_str
     
     

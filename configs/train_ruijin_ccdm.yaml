@@ -16,30 +16,47 @@ dataset:
       max_size: 8
 
 model:
-  target: train.ccdm.CategoricalDiffusionModel
+  base_learning_rate: 4.5e-6
+  target: train.trainer.CCDM
   params:
-    train_ddim_sigmas: false
-    diffusion_model_spec:
-      schedule: cosine
-    denoising_model_spec:
-      unet:
-        target: ddpm.models.unet_openai.unet.UNetModel
-        params:
-          model_channels: 64
-          num_res_blocks: 2
-          cond_encoded_shape: null
-          num_heads: 1
-          num_head_channels: 32
-          channel_mult: [1, 2, 2, 4, 8]
-          attention_resolutions: [32, 16, 8]
-          use_checkpoint: true
-          dims: 3
-          use_spatial_transformer: true
-          transformer_depth: 1
-          context_dim: 5120
-          ce_head: false
+    diffusion_model_config:
+      target: train.ccdm.DiffusionModel
       params:
+        schedule: cosine
+
+    denoising_model_config:
+      target: train.ccdm.DenoisingModel
+      params:
+        unet_config:
+          target: ddpm.models.unet_openai.unet.UNetModel
+          params:
+            model_channels: 64
+            num_res_blocks: 2
+            cond_encoded_shape: null
+            num_heads: 1
+            num_head_channels: 32
+            channel_mult: [1, 2, 2, 4, 8]
+            attention_resolutions: [32, 16, 8]
+            use_checkpoint: true
+            dims: 3
+            use_spatial_transformer: true
+            transformer_depth: 1
+            context_dim: 5120
+            ce_head: false
         step_T_sample: majority
+
+      loss_config:
+        lpips: 
+          target: train.eval_metrics.pretrained_lpips
+        recover_loss:
+          target: train.loss.TextRecoverModule
+          params:
+            m_embed: 256
+            n_layer: 2
+        kl_div:
+          target: train.loss.DiffusionKLLoss
+
+      train_ddim_sigmas: false
 
 encoder:
   data_encoder:

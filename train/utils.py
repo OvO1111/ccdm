@@ -40,16 +40,22 @@ def maybe_mkdir(d):
     return d
 
 
-def get_cls_from_pkg(pkg, /, **kwargs):
-    if pkg is None: return None
-    if isinstance(pkg, dict):
-        pkg, _kwargs = pkg["target"], pkg.get("params", None)
-        if _kwargs is not None: kwargs.update(_kwargs)
-    pkg, attr = '.'.join(pkg.split('.')[:-1]), pkg.split('.')[-1]
-    cls = getattr(importlib.import_module(pkg), attr)
-    if isinstance(cls, Callable):
-        cls = cls(**kwargs)
-    return cls
+def instantiate_from_config(config):
+    if not "target" in config:
+        if config == '__is_first_stage__':
+            return None
+        elif config == "__is_unconditional__":
+            return None
+        raise KeyError("Expected key `target` to instantiate.")
+    return get_obj_from_str(config["target"])(**config.get("params", dict()))
+
+
+def get_obj_from_str(string, reload=False):
+    module, cls = string.rsplit(".", 1)
+    if reload:
+        module_imp = importlib.import_module(module)
+        importlib.reload(module_imp)
+    return getattr(importlib.import_module(module, package=None), cls)
 
 
 def check_loss(loss: torch.Tensor, is_kl=False):
@@ -151,8 +157,9 @@ class BasicLogger:
         
         existent_files = sorted([os.path.join(self.logger_base, n) for n in os.listdir(self.logger_base)],
                                 key=lambda x: os.path.getmtime(x))
-        
-    def _image_logger(self, dict_of_images, path):
+
+    @classmethod
+    def _image_logger(cls, dict_of_images, path):
         ind_vis = {}
         for k, v in dict_of_images.items():
             if isinstance(v, torch.Tensor): ind_vis[str(k)] = visualize(v).squeeze().data.cpu().numpy()
