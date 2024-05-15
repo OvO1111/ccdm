@@ -9,7 +9,7 @@ from torch import nn
 import numpy as np
 from tqdm import tqdm
 
-from train.utils import instantiate_from_config, dummy_context, get_obj_from_str
+from train.utils import instantiate_from_config
 from torch.distributions import OneHotCategorical
 
 LOGGER = logging.getLogger(__name__)

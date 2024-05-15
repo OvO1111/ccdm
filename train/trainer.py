@@ -58,6 +58,7 @@ class CCDM(pl.LightningModule):
         self.train_ddim_sigmas = train_ddim_sigmas
         
         self.loss_fn = dict()
+        diffusion_model_config["params"]["num_classes"] = len(self.legends)
         self.diffusion_model: DiffusionModel = instantiate_from_config(**diffusion_model_config)
         self.denoising_model: DenoisingModel = instantiate_from_config(**denoising_model_config)
         if self.is_conditional:
