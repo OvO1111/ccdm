@@ -148,14 +148,15 @@ class Trainer:
             
             x0 = self.x_encoder(x0).float()
             t = torch.multinomial(torch.arange(self.timesteps + 1, device=self.device) ** 1.5, self.batch_size)
-            xt = self.accelerator.unwrap_model(self.model).diffusion_model.q_xt_given_x0(x0, t).sample()
+            noise = OneHotCategoricalBCHW(torch.zeros(x0.shape, self.device)).sample()
+            xt = self.accelerator.unwrap_model(self.model).diffusion_model.q_xt_given_x0(x0, t, noise).sample()
             ret = self.model(xt.contiguous(),
                              self.condition_encoder(None), None, t,
                              context=self.context_encoder(context))
             c_pred = ret["cond_pred_logits"]
             x0_pred = ret["diffusion_out"]
             
-            loss_diffusion = self.kl_loss(xt, x0, x0_pred, t)
+            loss_diffusion = self.kl_loss(xt, x0, x0_pred, t, noise)
             loss_ce = nn.functional.cross_entropy(c_pred, class_id)
             # loss_l1 = nn.functional.l1_loss(x0, x0_pred)
             loss_recover, recovered_text = self.recover_loss(ret["middle_block"].contiguous().view(x0_pred.shape[0], -1), text)

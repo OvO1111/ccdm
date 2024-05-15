@@ -154,24 +154,44 @@ class DiffusionModel(nn.Module):
     def time_steps(self):
         return len(self.betas)
 
-    def q_xt_given_xtm1(self, xtm1: Tensor, t: Tensor) -> OneHotCategoricalBCHW:
+    def q_xt_given_xtm1(self, xtm1: Tensor, t: Tensor, noise: Tensor=None) -> OneHotCategoricalBCHW:
         t = t - 1
         betas = self.betas[t]
         betas = betas[..., None, None, None]
         if self.dims == 3: betas = betas[..., None]
-        probs = (1 - betas) * xtm1 + betas / self.num_classes
+        if noise is None: probs = (1 - betas) * xtm1 + betas / self.num_classes
+        else: probs = (1 - betas) * xtm1 + betas * noise
         return OneHotCategoricalBCHW(probs)
 
-    def q_xt_given_x0(self, x0: Tensor, t: Tensor) -> OneHotCategoricalBCHW:
+    def q_xt_given_x0(self, x0: Tensor, t: Tensor, noise: Tensor=None) -> OneHotCategoricalBCHW:
         t = t - 1
         cumalphas = self.cumalphas[t]
         cumalphas = cumalphas[..., None, None, None]
         if self.dims == 3: cumalphas = cumalphas[..., None]
-        probs = cumalphas * x0 + (1 - cumalphas) / self.num_classes
+        if noise is None: probs = cumalphas * x0 + (1 - cumalphas) / self.num_classes
+        else: probs = cumalphas * x0 + (1 - cumalphas) * noise
         return OneHotCategoricalBCHW(probs)
-
-    def theta_post(self, xt: Tensor, x0: Tensor, t: Tensor) -> Tensor:
+    
+    def theta_post_v2(self, xt: Tensor, x0: Tensor, t: Tensor, noise: Tensor=None) -> Tensor:
+        # computes q_xtm1 given q_xt, q_x0, by setting gamma=0: q=\alpha e_xt+\beta e_x0
         t = t - 1
+        cumalphas_t = self.cumalphas[t]
+        cumalphas_tm1 = self.cumalphas[t - 1]
+        
+        cumalphas_t[t == 0] = 1.
+        cumalphas_tm1[t == 0] = 1.
+        alpha = (1 - cumalphas_tm1) / (1 - cumalphas_t)[..., None, None, None]
+        beta = (cumalphas_tm1 - cumalphas_t) / ((1 - cumalphas_t) * (1 + (self.num_classes - 1) * cumalphas_t))[..., None, None, None]
+        if self.dims == 3:
+            alpha, beta = alpha[..., None], beta[..., None]
+            
+        theta = alpha * xt + beta * x0
+        return theta / theta.sum(dim=1, keepdim=True)
+
+    def theta_post(self, xt: Tensor, x0: Tensor, t: Tensor, noise: Tensor=None) -> Tensor:
+        # computes q_xtm1 given q_xt, q_x0, noise
+        t = t - 1
+        smooth = 1e-8
         alphas_t = self.alphas[t][..., None, None, None]
         cumalphas_tm1 = self.cumalphas[t - 1][..., None, None, None]
         if self.dims == 3:
@@ -179,11 +199,11 @@ class DiffusionModel(nn.Module):
             cumalphas_tm1 = cumalphas_tm1[..., None]
         alphas_t[t == 0] = 0.0
         cumalphas_tm1[t == 0] = 1.0
-        theta = ((alphas_t * xt + (1 - alphas_t) / self.num_classes) *
-                 (cumalphas_tm1 * x0 + (1 - cumalphas_tm1) / self.num_classes))
-        return theta / theta.sum(dim=1, keepdim=True)
+        if noise is None: theta = ((alphas_t * xt + (1 - alphas_t) / self.num_classes) * (cumalphas_tm1 * x0 + (1 - cumalphas_tm1) / self.num_classes))
+        else: theta = ((alphas_t * xt + (1 - alphas_t) * noise) * (cumalphas_tm1 * x0 + (1 - cumalphas_tm1) * noise))
+        return (theta + smooth) / (theta.sum(dim=1, keepdim=True) + smooth)
 
-    def theta_post_prob(self, xt: Tensor, theta_x0: Tensor, t: Tensor) -> Tensor:
+    def theta_post_prob(self, xt: Tensor, theta_x0: Tensor, t: Tensor, noise: Tensor=None) -> Tensor:
         """
         This is equivalent to calling theta_post with all possible values of x0
         from 0 to C-1 and multiplying each answer times theta_x0[:, c].
@@ -193,6 +213,7 @@ class DiffusionModel(nn.Module):
         use theta_post instead.
         """
         t = t - 1
+        smooth = 1e-8
         alphas_t = self.alphas[t][..., None, None, None]
         cumalphas_tm1 = self.cumalphas[t - 1][..., None, None, None, None]
         if self.dims == 3:
@@ -205,17 +226,32 @@ class DiffusionModel(nn.Module):
         x0 = torch.eye(self.num_classes, device=xt.device)[None, :, :, None, None]
         if self.dims == 3: x0 = x0[..., None]
         # theta_xt_xtm1.shape == [B, C, H, W]
-        theta_xt_xtm1 = alphas_t * xt + (1 - alphas_t) / self.num_classes
         # theta_xtm1_x0.shape == [B, C1, C2, H, W]
-        theta_xtm1_x0 = cumalphas_tm1 * x0 + (1 - cumalphas_tm1) / self.num_classes
+        if noise is None: 
+            theta_xt_xtm1 = alphas_t * xt + (1 - alphas_t) / self.num_classes
+            theta_xtm1_x0 = cumalphas_tm1 * x0 + (1 - cumalphas_tm1) / self.num_classes
+            
+            aux = theta_xt_xtm1[:, :, None] * theta_xtm1_x0
+            # theta_xtm1_xtx0 == [B, C1, C2, H, W]
+            theta_xtm1_xtx0 = (aux + smooth) / (aux.sum(dim=1, keepdim=True) + smooth)
+            
+            # theta_x0.shape = [B, C, H, W]
+            out = torch.einsum("bcdlhw,bdlhw->bclhw", theta_xtm1_xtx0, theta_x0) if self.dims == 3 else\
+                torch.einsum("bcdhw,bdhw->bchw", theta_xtm1_xtx0, theta_x0)
+            
+        else:
+            theta_xt_xtm1 = alphas_t * xt + (1 - alphas_t) * noise
+            theta_xtm1_x0 = cumalphas_tm1 * x0 + (1 - cumalphas_tm1) * noise
 
-        aux = theta_xt_xtm1[:, :, None] * theta_xtm1_x0
-        # theta_xtm1_xtx0 == [B, C1, C2, H, W]
-        theta_xtm1_xtx0 = aux / aux.sum(dim=1, keepdim=True)
-
-        # theta_x0.shape = [B, C, H, W]
-        out = torch.einsum("bcdlhw,bdlhw->bclhw", theta_xtm1_xtx0, theta_x0) if self.dims == 3 else\
-            torch.einsum("bcdhw,bdhw->bchw", theta_xtm1_xtx0, theta_x0)
+            aux = theta_xt_xtm1[:, :, None] * theta_xtm1_x0
+            # theta_xtm1_xtx0 == [B, C1, C2, H, W]
+            theta_xtm1_xtx0 = aux / (aux.sum(dim=1, keepdim=True) + smooth)
+            
+            # theta_x0.shape = [B, C, H, W]
+            out = torch.einsum("bcdlhw,bdlhw->bclhw", theta_xtm1_xtx0, theta_x0) if self.dims == 3 else\
+                torch.einsum("bcdhw,bdhw->bchw", theta_xtm1_xtx0, theta_x0)
+            out = out / out.sum(1, keepdim=True)
+            
         return out
 
 

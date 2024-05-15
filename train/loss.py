@@ -29,9 +29,9 @@ class DiffusionKLLoss(nn.Module):
         self.diffusion_model = diffusion_model
         self.attn_weight = attn_weight
     
-    def forward(self, xt, x0, x0_pred, t, **kwargs):
-        prob_xtm1_given_xt_x0 = self.diffusion_model.theta_post(xt, x0, t)
-        prob_xtm1_given_xt_x0pred = self.diffusion_model.theta_post_prob(xt, x0_pred, t)
+    def forward(self, xt, x0, x0_pred, t, noise=None, **kwargs):
+        prob_xtm1_given_xt_x0 = self.diffusion_model.theta_post(xt, x0, t, noise)
+        prob_xtm1_given_xt_x0pred = self.diffusion_model.theta_post_prob(xt, x0_pred, t, noise)
         
         loss = nn.functional.kl_div(
             torch.log(torch.clamp(prob_xtm1_given_xt_x0pred, min=1e-12)),
