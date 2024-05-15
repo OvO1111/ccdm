@@ -48,11 +48,8 @@ model:
       loss_config:
         lpips: 
           target: train.eval_metrics.pretrained_lpips
-        recover_loss:
-          target: train.loss.TextRecoverModule
-          params:
-            m_embed: 256
-            n_layer: 2
+        ce:
+          target: torch.nn.CrossEntropyLoss
         kl_div:
           target: train.loss.DiffusionKLLoss
 
