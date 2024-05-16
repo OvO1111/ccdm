@@ -1,35 +1,52 @@
-dataset:
-  train:
-    target: datasets.ruijin.Ruijin_3D_Mask
-    params:
-      split: train
-      max_size: null
-  validation:
-    target: datasets.ruijin.Ruijin_3D_Mask
-    params:
-      split: val
-      max_size: 10
-  test:
-    target: datasets.ruijin.Ruijin_3D_Mask
-    params:
-      split: test
-      max_size: 8
+data:
+  target: main.DataModuleFromConfig
+  params:
+    batch_size: 1
+    num_workers: 2
+    wrap: False
+    train:
+      target: datasets.ruijin.Ruijin_3D_Mask
+      params:
+        split: train
+        max_size: null
+    validation:
+      target: datasets.ruijin.Ruijin_3D_Mask
+      params:
+        split: val
+        max_size: 10
+    test:
+      target: datasets.ruijin.Ruijin_3D_Mask
+      params:
+        split: test
+        max_size: 8
 
 model:
   base_learning_rate: 4.5e-6
   target: train.trainer.CCDM
   params:
+    use_scheduler: false
+    scheduler_config:
+      target: train.lr_scheduler.LambdaLinearScheduler
+      params:
+        warm_up_steps: [10000]
+        cycle_lengths: [10000000000000]
+        f_start: [1.e-6]
+        f_max: [1.]
+        f_min: [1.]
+    monitor: "val/rec_loss"
     diffusion_model_config:
       target: train.ccdm.DiffusionModel
       params:
         schedule: cosine
-
+        num_classes: 12
     denoising_model_config:
       target: train.ccdm.DenoisingModel
       params:
         unet_config:
           target: ddpm.models.unet_openai.unet.UNetModel
           params:
+            in_channels: 12
+            out_channels: 12
             model_channels: 64
             num_res_blocks: 2
             cond_encoded_shape: null
@@ -44,29 +61,27 @@ model:
             context_dim: 5120
             ce_head: false
         step_T_sample: majority
+    loss_config:
+      lpips: 
+        target: train.eval_metrics.pretrained_lpips
+      ce_loss:
+        target: torch.nn.CrossEntropyLoss
+      # kl_div:
+      #   target: train.loss.DiffusionKLLoss
+      l1_loss:
+        coeff: 1000
 
-      loss_config:
-        lpips: 
-          target: train.eval_metrics.pretrained_lpips
-        ce:
-          target: torch.nn.CrossEntropyLoss
-        kl_div:
-          target: train.loss.DiffusionKLLoss
-
-      train_ddim_sigmas: false
-
-encoder:
-  data_encoder:
-  condition_encoder:
-  context_encoder:
-    target: ddpm.models.encoder.AbstractEncoder
-    params:
-
-trainer:
-  target: train.trainer.Trainer
-  params:
-    batch_size: 1
-    max_epochs: 50
-    timesteps: 1000
-    lr: 1e-4
-    snapshot_path: /ailab/user/dailinrui/data/ccdm/test
+lightning:
+  callbacks:
+    image_logger:
+      target: main.ImageLogger
+      params:
+        train_batch_frequency: 400
+        val_batch_frequency: 1
+        max_images: 20
+        log_images_kwargs:
+          ddim_steps: null
+        log_first_step: false
+  trainer:
+    max_epochs: 1000
+    num_sanity_val_steps: 0

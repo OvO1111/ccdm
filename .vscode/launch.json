@@ -10,7 +10,7 @@
             "type": "debugpy",
             "request": "launch",
             "program": "main.py",
-            "args": [],
+            "args": ["--base", "./configs/train_ruijin_ccdm.yaml", "-t", "--gpus", "0,", "--name", "test"],
             "purpose": ["debug-in-terminal"],
             "console": "integratedTerminal"
         },

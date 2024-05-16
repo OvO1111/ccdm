@@ -263,7 +263,7 @@ class DenoisingModel(nn.Module):
         self.unet = unet
         if self.unet is None:
             assert unet_config is not None
-            self.unet = instantiate_from_config(**unet_config)
+            self.unet = instantiate_from_config(unet_config)
         self.step_T_sample = step_T_sample
 
     @property
@@ -271,9 +271,9 @@ class DenoisingModel(nn.Module):
         return self.diffusion.time_steps
 
     def forward(self, x: Tensor, condition: Tensor, feature_condition: Tensor = None, t: Optional[Tensor] = None, label_ref_logits: Optional[Tensor] = None,
-                validation: bool = False, context=None) -> Union[Tensor, dict]:
+                validation: bool = False, context=None, is_logging_image=False) -> Union[Tensor, dict]:
 
-        if self.training:
+        if self.training or is_logging_image:
             if not isinstance(t, Tensor):
                 raise ValueError("'t' needs to be a Tensor at training time")
             if not isinstance(x, Tensor):

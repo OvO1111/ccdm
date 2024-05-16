@@ -161,7 +161,7 @@ def get_parser(**parser_kwargs):
         "-l",
         "--logdir",
         type=str,
-        default="/ailab/user/dailinrui/data/ldm",
+        default="/ailab/user/dailinrui/data/ccdm_pl",
         help="directory for logging dat shit",
     )
     parser.add_argument(
@@ -341,7 +341,7 @@ class SetupCallback(Callback):
 
 
 class ImageLogger(Callback):
-    def __init__(self, train_batch_frequency, val_batch_frequency, max_images, clamp=True,
+    def __init__(self, train_batch_frequency, val_batch_frequency, max_images,
                  rescale=True, disabled=False, log_on_batch_idx=False, log_first_step=False,
                  log_images_kwargs=None, save_num=30):
         super().__init__()
@@ -354,7 +354,6 @@ class ImageLogger(Callback):
         }
         self.log_steps_tr = [2 ** n for n in range(int(np.log2(self.batch_freq_tr)) + 1)]
         self.log_steps_val = [2 ** n for n in range(int(np.log2(self.batch_freq_val)) + 1)]
-        self.clamp = clamp
         self.disabled = disabled
         self.log_on_batch_idx = log_on_batch_idx
         self.log_images_kwargs = log_images_kwargs if log_images_kwargs else {}
@@ -363,9 +362,7 @@ class ImageLogger(Callback):
             
     @rank_zero_only
     def _wandb(self, pl_module, images, batch_idx, split):
-        for k in images:
-            _im = images[k]
-            pl_module.logger.experiment.log({f"{split}_{k}": [wandb.Image(_im)]})
+        pl_module.logger.experiment.log({f"{split}/image": [wandb.Image(images)]})
             
     @staticmethod
     def _maybe_mkdir(path):
@@ -382,8 +379,7 @@ class ImageLogger(Callback):
     @rank_zero_only
     def log_local(self, save_dir, split, images, global_step, current_epoch, batch_idx):
         root = os.path.join(save_dir, "images", split)
-        filename = "{}_gs-{:06}_e-{:06}_b-{:06}.png".format(
-            k,
+        filename = "gs-{:06}_e-{:06}_b-{:06}.png".format(
             global_step,
             current_epoch,
             batch_idx)
@@ -407,14 +403,6 @@ class ImageLogger(Callback):
             with torch.no_grad():
                 images = getattr(pl_module, f"log_images_{split}")(batch, split=split, **self.log_images_kwargs)
 
-            for k in images:
-                N = min(images[k].shape[0], self.max_images)
-                images[k] = images[k][:N]
-                if isinstance(images[k], torch.Tensor):
-                    images[k] = images[k].detach().cpu()
-                    if self.clamp:
-                        images[k] = torch.clamp(images[k], -1., 1.)
-
             local_images = self.log_local(pl_module.logger.save_dir, split, images,
                                           pl_module.global_step, pl_module.current_epoch, batch_idx)
 
@@ -426,7 +414,8 @@ class ImageLogger(Callback):
 
     def check_frequency(self, check_idx, split="train"):
         log_steps = self.log_steps_tr if split == "train" else self.log_steps_val
-        if ((check_idx % self.batch_freq) == 0 or (check_idx in log_steps)) and (
+        batch_freq = self.batch_freq_tr if split == "train" else self.batch_freq_val
+        if ((check_idx % batch_freq) == 0 or (check_idx in log_steps)) and (
                 check_idx > 0 or self.log_first_step):
             try:
                 log_steps.pop(0)
@@ -472,52 +461,6 @@ class CUDACallback(Callback):
 
 
 if __name__ == "__main__":
-    # custom parser to specify config files, train, test and debug mode,
-    # postfix, resume.
-    # `--key value` arguments are interpreted as arguments to the trainer.
-    # `nested.key=value` arguments are interpreted as config parameters.
-    # configs are merged from left-to-right followed by command line parameters.
-
-    # model:
-    #   base_learning_rate: float
-    #   target: path to lightning module
-    #   params:
-    #       key: value
-    # data:
-    #   target: main.DataModuleFromConfig
-    #   params:
-    #      batch_size: int
-    #      wrap: bool
-    #      train:
-    #          target: path to train dataset
-    #          params:
-    #              key: value
-    #      validation:
-    #          target: path to validation dataset
-    #          params:
-    #              key: value
-    #      test:
-    #          target: path to test dataset
-    #          params:
-    #              key: value
-    # lightning: (optional, has sane defaults and can be specified on cmdline)
-    #   trainer:
-    #       additional arguments to trainer
-    #   logger:
-    #       logger to instantiate
-    #   modelcheckpoint:
-    #       modelcheckpoint to instantiate
-    #   callbacks:
-    #       callback1:
-    #           target: importpath
-    #           params:
-    #               key: value
-
-    # now = datetime.datetime.now().strftime("%Y-%m-%d")
-
-    # add cwd for convenience and to make classes in this file available when
-    # running as `python main.py`
-    # (in particular `main.DataModuleFromConfig`)
     sys.path.append(os.getcwd())
 
     parser = get_parser()
@@ -659,11 +602,8 @@ if __name__ == "__main__":
             "image_logger": {
                 "target": "main.ImageLogger",
                 "params": {
-                    "batch_frequency": 750,
-                    "max_images": 4,
-                    "clamp": True,
-                    "rescale": False,
-                    "rescale_fn": "clamp",
+                    "train_batch_frequency": 750,
+                    "max_images": 40,
                 }
             },
             "learning_rate_logger": {

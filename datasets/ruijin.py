@@ -111,12 +111,12 @@ class Ruijin_3D_Mask(Dataset):
                 "class": self._get_class(item.get("summary", "").split("；")[0]),
                 "spacing": spacing, "casename": key}
         
-    def collate_fn(self, batch):
+    def collate(self, batch):
         context = [b["context"] for b in batch]
         for b in batch: del b["context"]
         collated = _utils.collate.default_collate(batch)
         longest_context = max([b.shape[0] for b in context]) if self.collate_context_len is None else self.collate_context_len
-        collated_context = torch.cat([functional.pad(c, (0, 0, 0, longest_context - c.shape[0]), mode="constant", value=0) if c.shape[0] <= longest_context else c[:longest_context] for c in context], dim=0)
+        collated_context = torch.cat([functional.pad(c, (0, 0, 0, longest_context - c.shape[1]), mode="constant", value=0) if c.shape[1] <= longest_context else c[:, :longest_context] for c in context], dim=0)
         collated["context"] = collated_context
         return collated
     

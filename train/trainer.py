@@ -14,7 +14,7 @@ import pytorch_lightning as pl
 
 sys.path.append("/mnt/workspace/dailinrui/code/multimodal/trajectory_generation/ccdm")
 from train.utils import default, identity, get_obj_from_str, instantiate_from_config, print_parameters
-from train.ccdm import CategoricalDiffusionModel, OneHotCategoricalBCHW
+from train.ccdm import OneHotCategoricalBCHW
 
 
 def identity(x, *args, **kwargs):
@@ -31,6 +31,7 @@ def exist(x):
 
 class LossWrapper(nn.Module):
     def __init__(self, coeff, module):
+        super().__init__()
         self.coeff = coeff
         self.module = module
         
@@ -39,15 +40,16 @@ class LossWrapper(nn.Module):
 
 
 class CCDM(pl.LightningModule):
-    legends = ["background", "spleen", "kidney_left", "kidney_right", "liver", "stomach", "pancreas", "small_bowel",
-               "duodenum", "colon", "uniary_bladder", "colorectal_cancer"]
     def __init__(self, diffusion_model_config, denoising_model_config, loss_config,
                  conditional_encoder_config=None,
                  train_ddim_sigmas=False,
                  is_conditional=True,
                  data_key="mask",
-                 cond_key="text",
+                 cond_key="context",
                  timesteps=1000,
+                 use_scheduler=True,
+                 scheduler_config=None,
+                 monitor=None,
                  conditioning_key="crossattn") -> None:
         super().__init__()
         self.data_key = data_key
@@ -55,12 +57,16 @@ class CCDM(pl.LightningModule):
         self.timesteps = timesteps
         self.conditioning_key = conditioning_key
         self.is_conditional = is_conditional
+        self.use_scheduler = use_scheduler
         self.train_ddim_sigmas = train_ddim_sigmas
+        if self.use_scheduler:
+            self.scheduler_config = scheduler_config
+        if monitor is not None:
+            self.monitor = monitor
         
         self.loss_fn = dict()
-        diffusion_model_config["params"]["num_classes"] = len(self.legends)
-        self.diffusion_model: DiffusionModel = instantiate_from_config(**diffusion_model_config)
-        self.denoising_model: DenoisingModel = instantiate_from_config(**denoising_model_config)
+        self.diffusion_model: DiffusionModel = instantiate_from_config(diffusion_model_config, time_steps=timesteps)
+        self.denoising_model: DenoisingModel = instantiate_from_config(denoising_model_config, diffusion=self.diffusion_model)
         if self.is_conditional:
             if conditional_encoder_config is None: self.condition_encoder = nn.Identity()
             else: self.condition_encoder = instantiate_from_config(**conditional_encoder_config)
@@ -74,52 +80,39 @@ class CCDM(pl.LightningModule):
         if "lpips" in loss_config:
             config = loss_config["lpips"]
             self.loss_fn["lpips"] = LossWrapper(config.get("coeff", 1), 
-                                                get_obj_from_str(config["target"])(**config.get("params", {}),
-                                                                                   device=self.device))
-            
+                                                get_obj_from_str(config["target"])(**config.get("params", {}),))
         if "recover_loss" in loss_config:
             config = loss_config["recover_loss"]
             self.loss_fn["recover_loss"] = LossWrapper(config.get("coeff", 1), 
                                                        get_obj_from_str(config["target"])(**config.get("params", {}),
                                                                                         image_in_size=self.denoising_model.unet.fc_in))
+        if "ce_loss" in loss_config:
+            config = loss_config["ce_loss"]
+            self.loss_fn["ce_loss"] = LossWrapper(config.get("coeff", 1), nn.CrossEntropyLoss(reduction='mean'))
+        if "l1_loss" in loss_config:
+            config = loss_config["l1_loss"]
+            self.loss_fn["l1_loss"] = LossWrapper(config.get("coeff", 1), nn.L1Loss(reduction='mean'))
         
         print_parameters(model=self)
         self.val_image_buffer = []
      
-    def read_spec(self, specs):
-        dataset_spec, model_spec, encoder_spec = specs["dataset"], specs['model'], specs['encoder']
-        
-        self.train_ds = get_cls_from_pkg(dataset_spec["train"])
-        self.val_ds = get_cls_from_pkg(dataset_spec["validation"])
-        self.test_ds = get_cls_from_pkg(dataset_spec.get("test", dataset_spec["validation"]))
-        
-        self.x_encoder = default(get_cls_from_pkg(encoder_spec["data_encoder"]), identity)
-        self.condition_encoder = default(get_cls_from_pkg(encoder_spec["condition_encoder"]), identity)
-        self.context_encoder = default(get_cls_from_pkg(encoder_spec["context_encoder"]), identity)
-        
-        self.model = get_cls_from_pkg(model_spec,
-                                      num_classes=len(self.legends),
-                                      num_timesteps=self.timesteps,
-                                      spatial_size=self.train_ds.spatial_size[::-1],
-                                      condition_channels=getattr(self.condition_encoder, "in_channels", 0))
-    
-    def get_input(self, batch, *keys):
-        ret = []
-        for key in keys:
-            ret.append(batch.get(key))
+    def get_input(self, batch, data_key, cond_key):
+        x = batch.get(data_key)
+        c = self.condition_encoder(batch.get(cond_key))
+        c = {f"c_{self.conditioning_key}": c}
+        ret = [x, c]
         return ret
         
     def training_step(self, batch, batch_idx):
         x0, c = self.get_input(batch, self.data_key, self.cond_key)
-        c = {f"c_{self.conditioning_key}": c}
         b, *shp = x0.shape
         t = torch.multinomial(torch.arange(self.timesteps + 1, device=self.device) ** 1.5, b)
         noise = OneHotCategoricalBCHW(logits=torch.zeros_like(x0)).sample()
         xt = self.diffusion_model.q_xt_given_x0(x0, t, noise=noise).sample()
-        f = self.model(xt.contiguous(),
-                       self.condition_encoder(c.get("c_concat", None)),
-                       None, t,
-                       context=self.condition_encoder(c.get("c_crossattn", None)))
+        f = self.denoising_model(xt.contiguous(),
+                                 c.get("c_concat"),
+                                 None, t,
+                                 context=c.get("c_crossattn", None))
         x0_ = f["diffusion_out"]
         c_ = f["cond_pred_logits"]
         
@@ -129,12 +122,23 @@ class CCDM(pl.LightningModule):
             loss = self.loss_fn["kl_div"](xt, x0, x0_, t, noise=noise)
             loss_log["train/kl_div_loss"] = loss.item()
             batch_loss += loss
-        if "ce" in self.loss_fn:
-            loss = self.loss_fn["ce"](c_, batch["class"])
+        if "ce_loss" in self.loss_fn:
+            loss = self.loss_fn["ce_loss"](c_, batch["class"])
             loss_log["train/ce_loss"] = loss.item()
             batch_loss += loss
+        if "l1_loss" in self.loss_fn:
+            loss = self.loss_fn["l1_loss"](x0_, x0)
+            loss_log["train/l1_loss"] = loss.item()
+            batch_loss += loss
             
-        self.log_dict(batch_loss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+        self.log("global_step", self.global_step,
+                 prog_bar=True, logger=True, on_step=True, on_epoch=False)
+
+        if self.use_scheduler:
+            lr = self.optimizers().param_groups[0]['lr']
+            self.log('lr_abs', lr, prog_bar=True, logger=True, on_step=True, on_epoch=False)
+            
+        self.log_dict(loss_log, prog_bar=True, logger=True, on_step=True, on_epoch=True)
         return batch_loss
     
     @torch.no_grad()
@@ -144,10 +148,11 @@ class CCDM(pl.LightningModule):
         t = torch.multinomial(torch.arange(self.timesteps + 1, device=self.device) ** 1.5, b)
         noise = OneHotCategoricalBCHW(logits=torch.zeros_like(x0)).sample()
         xt = self.diffusion_model.q_xt_given_x0(x0, t, noise=noise).sample()
-        f = self.model(xt.contiguous(),
-                       self.condition_encoder(c.get("c_concat", None)),
-                       None, t,
-                       context=self.condition_encoder(c.get("c_crossattn", None)))
+        f = self.denoising_model(xt.contiguous(),
+                                c.get("c_concat", None),
+                                None, t,
+                                context=c.get("c_crossattn", None),
+                                is_logging_image=True)
         x0_ = f["diffusion_out"]
         
         image = dict(inputs=x0.argmax(1), 
@@ -157,8 +162,9 @@ class CCDM(pl.LightningModule):
         return image
     
     @torch.no_grad()
-    def log_images_val(self, batch, **kwargs):
-        image = self.val_image_buffer.pop()
+    def log_images_val(self, batch, ddim_steps=None, **kwargs):
+        if not ddim_steps:
+            image = self.val_image_buffer.pop()
         return image
     
     @torch.no_grad()
@@ -183,6 +189,20 @@ class CCDM(pl.LightningModule):
         if "lpips" in self.loss_fn:
             lpips = self.loss_fn(x0_, x0)
             self.log("val/lpips_metric", lpips, prog_bar=True, on_step=True)
+            
+    def configure_optimizers(self):
+        lr = self.learning_rate
+        opt = torch.optim.AdamW(list(self.denoising_model.parameters()), lr=lr)
+        if self.use_scheduler:
+            scheduler = instantiate_from_config(self.scheduler_config)
+            sch = [
+                {
+                    'scheduler': torch.optim.lr_scheduler.LambdaLR(opt, scheduler.schedule),
+                    'interval': 'step',
+                    'frequency': 1
+                }]
+            return [opt], sch
+        return opt
 
 
 if __name__ == "__main__":
