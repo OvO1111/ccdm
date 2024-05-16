@@ -172,21 +172,19 @@ class DiffusionModel(nn.Module):
         else: probs = cumalphas * x0 + (1 - cumalphas) * noise
         return OneHotCategoricalBCHW(probs)
     
-    def theta_post_v2(self, xt: Tensor, x0: Tensor, t: Tensor, noise: Tensor=None) -> Tensor:
-        # computes q_xtm1 given q_xt, q_x0, by setting gamma=0: q=\alpha e_xt+\beta e_x0
+    def q_xtm1_given_xt_x0(self, x0: Tensor, t: Tensor, xt: Tensor, noise: Tensor=None) -> Tensor:
         t = t - 1
         cumalphas_t = self.cumalphas[t]
         cumalphas_tm1 = self.cumalphas[t - 1]
+        cumalphas_t, cumalphas_tm1 = cumalphas_t[..., None, None, None], cumalphas_tm1[..., None, None, None]
+        if self.dims == 3: cumalphas_t, cumalphas_tm1 = cumalphas_t[..., None], cumalphas_tm1[..., None]
+    
+        alpha = 1 - (self.num_classes + 1) * (1 - cumalphas_tm1 / cumalphas_t)
+        beta = 1 - cumalphas_tm1 / cumalphas_t
+        gamma = ((1 - cumalphas_tm1) / (1 - cumalphas_t) - 1 + (self.num_classes + 1) * (1 - cumalphas_tm1 / cumalphas_t)) / self.num_classes
         
-        cumalphas_t[t == 0] = 1.
-        cumalphas_tm1[t == 0] = 1.
-        alpha = (1 - cumalphas_tm1) / (1 - cumalphas_t)[..., None, None, None]
-        beta = (cumalphas_tm1 - cumalphas_t) / ((1 - cumalphas_t) * (1 + (self.num_classes - 1) * cumalphas_t))[..., None, None, None]
-        if self.dims == 3:
-            alpha, beta = alpha[..., None], beta[..., None]
-            
-        theta = alpha * xt + beta * x0
-        return theta / theta.sum(dim=1, keepdim=True)
+        probs = alpha * xt + beta * x0 + gamma * noise
+        return probs
 
     def theta_post(self, xt: Tensor, x0: Tensor, t: Tensor, noise: Tensor=None) -> Tensor:
         # computes q_xtm1 given q_xt, q_x0, noise

@@ -148,24 +148,25 @@ class Trainer:
             
             x0 = self.x_encoder(x0).float()
             t = torch.multinomial(torch.arange(self.timesteps + 1, device=self.device) ** 1.5, self.batch_size)
-            noise = OneHotCategoricalBCHW(torch.zeros(x0.shape, self.device)).sample()
+            noise = OneHotCategoricalBCHW(torch.ones(x0.shape, device=self.device)).sample()
             xt = self.accelerator.unwrap_model(self.model).diffusion_model.q_xt_given_x0(x0, t, noise).sample()
+            mod_q_xtm1_given_xt_x0 = self.accelerator.unwrap_model(self.model).diffusion_model.q_xtm1_given_xt_x0(x0, t, xt, noise)
             ret = self.model(xt.contiguous(),
                              self.condition_encoder(None), None, t,
                              context=self.context_encoder(context))
             c_pred = ret["cond_pred_logits"]
             x0_pred = ret["diffusion_out"]
             
-            loss_diffusion = self.kl_loss(xt, x0, x0_pred, t, noise)
+            # loss_diffusion = self.kl_loss(xt, x0, x0_pred, t)
             loss_ce = nn.functional.cross_entropy(c_pred, class_id)
-            # loss_l1 = nn.functional.l1_loss(x0, x0_pred)
-            loss_recover, recovered_text = self.recover_loss(ret["middle_block"].contiguous().view(x0_pred.shape[0], -1), text)
+            loss_l1 = nn.functional.l1_loss(x0, x0_pred, reduction='none').sum()
+            # loss_recover, recovered_text = self.recover_loss(ret["middle_block"].contiguous().view(x0_pred.shape[0], -1), text)
             
-            loss = loss_diffusion + loss_recover * 10 + loss_ce * 10
-            itr_loss["DiffusionKLLoss"] = loss_diffusion
-            # itr_loss["L1Loss_x0"] = loss_l1
+            loss = loss_l1 * .01 + loss_ce * 10
+            # itr_loss["DiffusionKLLoss"] = loss_diffusion
+            itr_loss["L1Loss_pq"] = loss_l1 * .01
             itr_loss["CrossEntropyLoss"] = loss_ce * 10
-            itr_loss["TextRecoverLoss"] = loss_recover * 10
+            # itr_loss["TextRecoverLoss"] = loss_recover * 10
             
             self.optimizer.zero_grad()
             self.accelerator.backward(loss)
@@ -188,11 +189,13 @@ class Trainer:
                 self.accelerator.log({"train/lr": lr,
                                     "train/debug": x0_pred.argmax(1).max().item(),
                                     "train/loss": loss.item(),
-                                    "train_diffusion_klloss": loss_diffusion.item(),
-                                    "train/recloss": loss_recover.item(),
-                                    # "train/l1loss": loss_l1.item(),
+                                    # "train_diffusion_klloss": loss_diffusion.item(),
+                                    # "train/recloss": loss_recover.item(),
+                                    "train/l1loss": loss_l1.item(),
                                     "train/crossentropyloss": loss_ce.item()}, step=global_step)
-                self.train_it.set_postfix(itr=global_step, **{k: f"{v.item():.2f}" for k, v in itr_loss.items()}, recovered_text=recovered_text, debug=x0_pred.argmax(1).max().item())
+                self.train_it.set_postfix(itr=global_step, **{k: f"{v.item():.2f}" for k, v in itr_loss.items()},
+                                        #   recovered_text=recovered_text,
+                                          debug=x0_pred.argmax(1).max().item())
                 self.train_it.update(self.accelerator.num_processes)
     
     def val(self, state_dict=None):
