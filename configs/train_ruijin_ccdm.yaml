@@ -52,7 +52,7 @@ trainer:
   target: train.trainer.Trainer
   params:
     batch_size: 1
-    max_epochs: 50
+    max_epochs: 200
     timesteps: 1000
     lr: 1e-4
     snapshot_path: /ailab/user/dailinrui/data/ccdm/test
