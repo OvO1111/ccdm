@@ -32,9 +32,11 @@ class Trainer:
                  restore_path=None,
                  val_every=1, 
                  save_every=5,
+                 num_classes=12,
                  save_n_train_image_per_epoch=10,
                  save_n_val_image_per_epoch=5) -> None:
         self.lr = lr
+        self.num_classes = num_classes
         self.batch_size = batch_size
         self.max_epochs = max_epochs
         self.timesteps = timesteps
@@ -73,7 +75,12 @@ class Trainer:
         
         self.accelerator = Accelerator(project_dir=self.snapshot_path,
                                        kwargs_handlers=[DistributedDataParallelKwargs(find_unused_parameters=True)],
-                                       log_with="tensorboard")
+                                       log_with="wandb")
+        self.accelerator.init_trackers(
+            project_name=os.environ.get("exp", "ccdm_test_run"),
+            config=spec,
+            init_kwargs={"wandb": {"entity": "winky-organization"}}
+        )
         
         self.device = self.accelerator.device
         self.val_device = torch.device("cuda", int(val_device)) if val_device is not None else self.device
@@ -85,8 +92,15 @@ class Trainer:
         self.recover_loss = TextRecoverModule(n_embed=256, n_layer=2, image_in_size=self.model.denoising_model.unet.fc_in)
         self.kl_loss = DiffusionKLLoss(attn_weight=torch.tensor(self.train_ds.cls_weight, device=self.device),
                                      diffusion_model=self.accelerator.unwrap_model(self.model).diffusion_model)
-        self.model, self.optimizer, self.train_dl, self.val_dl, self.lr_scheduler, self.lpips, self.recover_loss =\
-            self.accelerator.prepare(self.model, self.optimizer, self.train_dl, self.val_dl, self.lr_scheduler, self.lpips, self.recover_loss)
+        self.model, self.optimizer, self.train_dl, self.val_dl, self.lr_scheduler, self.lpips, self.recover_loss, self.context_encoder =\
+            self.accelerator.prepare(self.model,
+                                     self.optimizer,
+                                     self.train_dl,
+                                     self.val_dl,
+                                     self.lr_scheduler,
+                                     self.lpips,
+                                     self.recover_loss,
+                                     self.context_encoder)
         
         print_parameters(model=self.model, lpips=self.lpips)
         self.train_vis_step = max(1, len(self.train_dl) // save_n_train_image_per_epoch)
@@ -104,7 +118,7 @@ class Trainer:
         self.context_encoder = default(get_cls_from_pkg(encoder_spec["context_encoder"]), identity)
         
         self.model = get_cls_from_pkg(model_spec,
-                                      num_classes=len(self.legends),
+                                      num_classes=len(self.train_ds.cls_weight),
                                       num_timesteps=self.timesteps,
                                       spatial_size=self.train_ds.spatial_size[::-1],
                                       condition_channels=getattr(self.condition_encoder, "in_channels", 0))
@@ -139,8 +153,8 @@ class Trainer:
         self.recover_loss.train()
         for itr, batch in enumerate(self.train_dl):
             itr_loss = {}
-            x0, condition, context, class_id = map(lambda attr: None if not batch.__contains__(attr) else batch[attr].to(self.device), ["mask", "image", "context", "class"])
-            text = batch.get("text")
+            x0, condition, class_id = map(lambda attr: None if not batch.__contains__(attr) else batch[attr].to(self.device), ["mask", "image", "class"])
+            context = self.context_encoder(batch.get("text"))
             
             x0 = self.x_encoder(x0).float()
             t = torch.multinomial(torch.arange(self.timesteps + 1, device=self.device) ** 1.5, self.batch_size)
@@ -150,12 +164,12 @@ class Trainer:
             # mod_q_xtm1_given_xt_x0 = self.accelerator.unwrap_model(self.model).diffusion_model.q_xtm1_given_xt_x0(x0, t, xt, noise)
             ret = self.model(xt.contiguous(),
                              self.condition_encoder(None), None, t,
-                             context=self.context_encoder(context))
+                             context=context)
             c_pred = ret["cond_pred_logits"]
             x0_pred = ret["diffusion_out"]
             
             loss_diffusion = self.kl_loss(xt, x0, x0_pred, t)
-            loss_ce = nn.functional.cross_entropy(c_pred, class_id)
+            # loss_ce = nn.functional.cross_entropy(c_pred, class_id)
             # loss_l1 = nn.functional.l1_loss(x0, x0_pred, reduction='none').sum()
             # loss_recover, recovered_text = self.recover_loss(ret["middle_block"].contiguous().view(x0_pred.shape[0], -1), text)
             
@@ -177,19 +191,19 @@ class Trainer:
             self.accelerator.wait_for_everyone()
             if self.accelerator.is_main_process:
                 if itr % self.train_vis_step == 0:
-                    wandb_tracker = self.accelerator.get_tracker("wandb", unwrap=True)
                     image = self.logger["train"](dict(inputs=x0.argmax(1),
                                                         xt=xt.argmax(1),
                                                         t=str(t.cpu().numpy().tolist()),
+                                                        conditioning=str(batch.get("text")),
                                                         samples=x0_pred.argmax(1)), f"train_ep{self.epoch}_gs{self.train_it.n}.png")
-                    wandb_tracker.log({"train/image": wandb.Image(image)}, step=global_step)
                 self.accelerator.log({"train/lr": lr,
                                     "train/debug": x0_pred.argmax(1).max().item(),
                                     "train/loss": loss.item(),
                                     "train_diffusion_klloss": loss_diffusion.item(),
                                     # "train/recloss": loss_recover.item(),
                                     # "train/l1loss": loss_l1.item(),
-                                    "train/crossentropyloss": loss_ce.item()}, step=global_step)
+                                    # "train/crossentropyloss": loss_ce.item()
+                                    })
                 self.train_it.set_postfix(itr=global_step, **{k: f"{v.item():.2f}" for k, v in itr_loss.items()},
                                         #   recovered_text=recovered_text,
                                           debug=x0_pred.argmax(1).max().item())
@@ -205,8 +219,8 @@ class Trainer:
         val_loss = {k.__class__.__name__: 0 for k in [lpips, self.kl_loss]}
         
         for itr, batch in val_it:
-            x0, condition, context, class_id = map(lambda attr: None if not batch.__contains__(attr) else batch[attr].to(self.device), ["mask", "image", "context", "class"])
-            
+            x0, condition, class_id = map(lambda attr: None if not batch.__contains__(attr) else batch[attr].to(self.device), ["mask", "image", "class"])
+            context = self.context_encoder(batch.get("text"))
             x0 = self.x_encoder(x0)
             x0_shape = (x0.shape[0], model.diffusion_model.num_classes, *x0.shape[2:])
             xt = OneHotCategoricalBCHW(logits=torch.zeros(x0_shape, device=self.device)).sample()
@@ -219,12 +233,13 @@ class Trainer:
             # x0_pred, x0_denoise, ce_loss = ret
             ret = model(xt.contiguous(),
                         self.condition_encoder(None), None, None,
-                        context=self.context_encoder(context))
+                        context=context)
             x0_pred = ret["diffusion_out"]
             
             if itr % self.val_vis_step == 0:
                 self.logger["val"](dict(inputs=x0.argmax(1),
                                         xt=xt.argmax(1),
+                                        conditioning=str(batch.get("text")),
                                         samples=x0_pred.argmax(1),), f"val_ep{self.epoch}_gs{getattr(self.train_it, 'n', -1)}.png")
             
             val_it.set_postfix(**{k: v / (itr + 1) for k, v in val_loss.items()})

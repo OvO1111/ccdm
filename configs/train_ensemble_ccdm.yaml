@@ -1,0 +1,63 @@
+dataset:
+  train:
+    target: datasets.ensemble.EnsembleDataset
+    params:
+      split: train
+      max_size: null
+      resize_to: [64, 128, 128]
+  validation:
+    target: datasets.ensemble.EnsembleDataset
+    params:
+      split: val
+      max_size: 5
+      resize_to: [64, 128, 128]
+  test:
+    target: datasets.ensemble.EnsembleDataset
+    params:
+      split: test
+      max_size: 8
+      resize_to: [64, 128, 128]
+
+model:
+  target: train.ccdm.CategoricalDiffusionModel
+  params:
+    train_ddim_sigmas: false
+    diffusion_model_spec:
+      schedule: cosine
+    denoising_model_spec:
+      unet:
+        target: ddpm.models.unet_openai.unet.UNetModel
+        params:
+          model_channels: 64
+          num_res_blocks: 2
+          cond_encoded_shape: null
+          num_heads: 1
+          num_head_channels: 32
+          channel_mult: [1, 2, 2, 4, 8]
+          attention_resolutions: [32, 16, 8]
+          use_checkpoint: true
+          dims: 3
+          use_spatial_transformer: true
+          transformer_depth: 1
+          context_dim: 768
+          ce_head: false
+      params:
+        step_T_sample: majority
+
+encoder:
+  data_encoder:
+  condition_encoder:
+  context_encoder:
+    target: ddpm.models.encoder.FrozenBERTEmbedder
+    params:
+      ckpt_path: /ailab/user/dailinrui/data/dependency/bert-ernie-health
+
+trainer:
+  target: train.trainer.Trainer
+  params:
+    batch_size: 1
+    max_epochs: 200
+    timesteps: 1000
+    num_classes: 15
+    lr: 1e-4
+    snapshot_path: /ailab/user/dailinrui/data/ccdm/test

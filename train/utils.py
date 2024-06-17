@@ -77,7 +77,7 @@ def recursive_assign(dic:dict, key:str, value, sep='.'):
     return original_value
         
 
-def visualize(image: torch.Tensor, n: int=11, num_images=8):
+def visualize(image: torch.Tensor, n: int=14, num_images=8):
     if len(image.shape) == 4:
         b, h = image.shape[:2]
         if h > num_images: image = image[:, ::h // num_images]

@@ -35,7 +35,7 @@ class Ruijin_3D_Mask(Dataset):
                  max_size=None,
                  collate_len=16,
                  use_summary_level="short",
-                 spatial_size=(64, 128, 128),
+                 resize_to=(64, 128, 128),
                  text_encoder='CT_report_abstract_BLS_PULSE-20bv5_short',):
         
         with open('/ailab/user/dailinrui/data/records/dataset_crc_v2.json', 'rt') as f:
@@ -57,9 +57,9 @@ class Ruijin_3D_Mask(Dataset):
             
         self.text_features = {name: value for name, value in np.load(f"/ailab/user/dailinrui/data/dependency/{text_encoder}.npz").items()}
         
-        self.spatial_size = spatial_size
+        self.spatial_size = resize_to
         self.transforms = dict(
-            resize=tio.Resize(spatial_size) if spatial_size is not None else tio.Lambda(identity),
+            resize=tio.Resize(resize_to) if resize_to is not None else tio.Lambda(identity),
             crop=TorchioForegroundCropper(crop_level="mask_foreground", crop_anchor="mask", crop_kwargs=dict(foreground_mask_label=None,
                                                                                                              outline=(10, 10, 10))),
         )

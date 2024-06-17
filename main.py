@@ -22,6 +22,6 @@ def main(spec, subjects):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("-cfg", type=str, default="./configs/train_ruijin_ccdm.yaml")
+    parser.add_argument("-cfg", type=str, default="./configs/train_ensemble_ccdm.yaml")
     args, unknowns = parser.parse_known_args()
     main(args.cfg, unknowns)
