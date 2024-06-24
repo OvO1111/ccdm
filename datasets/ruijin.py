@@ -16,7 +16,7 @@ import multiprocessing as mp
 import torch
 import torch.nn.functional as functional
 from torch.utils.data import _utils, Dataset
-from datasets.utils import load_or_write_split, conserve_only_certain_labels, TorchioForegroundCropper
+from datasets.utils import load_or_write_split, conserve_only_certain_labels, window_norm, TorchioForegroundCropper, TorchioBaseResizer
 
 
 def identity(x, *args, **kwargs):
@@ -50,6 +50,8 @@ class Ruijin_3D_Mask(Dataset):
         
         self.collate_context_len = collate_len
         self.use_summary_level = use_summary_level
+        self.load_fn = lambda x: sitk.GetArrayFromImage(sitk.ReadImage(x))
+        self.get_spacing = lambda x: sitk.ReadImage(x).GetSpacing()
         if "PULSE" in text_encoder:
             if "short" in text_encoder: self.use_summary_level = "short"
             if "medium" in text_encoder: self.use_summary_level = "medium"
@@ -59,6 +61,7 @@ class Ruijin_3D_Mask(Dataset):
         
         self.spatial_size = resize_to
         self.transforms = dict(
+            resize_base=TorchioBaseResizer(),
             resize=tio.Resize(resize_to) if resize_to is not None else tio.Lambda(identity),
             crop=TorchioForegroundCropper(crop_level="mask_foreground", crop_anchor="mask", crop_kwargs=dict(foreground_mask_label=None,
                                                                                                              outline=(10, 10, 10))),

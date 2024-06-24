@@ -1,4 +1,4 @@
-import sys, os
+import sys, os, gc
 import torch
 import wandb
 import torch.distributed
@@ -31,7 +31,7 @@ class Trainer:
                  snapshot_path=None,
                  restore_path=None,
                  val_every=1, 
-                 save_every=5,
+                 save_every=50,
                  num_classes=12,
                  save_n_train_image_per_epoch=10,
                  save_n_val_image_per_epoch=5) -> None:
@@ -53,7 +53,7 @@ class Trainer:
         
         self.train_dl = DataLoader(self.train_ds,
                                    self.batch_size,
-                                   shuffle=True, pin_memory=True, num_workers=4, collate_fn=self.train_ds.collate_fn)
+                                   shuffle=True, pin_memory=True, num_workers=2, collate_fn=self.train_ds.collate_fn)
         self.val_dl = DataLoader(self.val_ds,
                                  batch_size=1,
                                  pin_memory=True,
@@ -66,7 +66,6 @@ class Trainer:
         self.logger = {"train":     BasicLogger("train", 10, self.visualization_path),
                        "val":       BasicLogger("val", 10, self.visualization_path),
                        "test":      BasicLogger("test", 10, self.visualization_path), 
-                       "nifti":     BasicLogger("nifti", 10, self.visualization_path),
                        "model":     BasicLogger("checkpoint", 5, self.snapshot_path)}
         
         self.optimizer = AdamW(self.model.parameters(), self.lr / self.batch_size)
@@ -77,9 +76,9 @@ class Trainer:
                                        kwargs_handlers=[DistributedDataParallelKwargs(find_unused_parameters=True)],
                                        log_with="wandb")
         self.accelerator.init_trackers(
-            project_name=os.environ.get("exp", "ccdm_test_run"),
+            project_name="ccdm",
             config=spec,
-            init_kwargs={"wandb": {"entity": "winky-organization"}}
+            init_kwargs={"wandb": {"entity": "winky-organization", "name": os.environ.get("exp", "test"), "save_dir": self.snapshot_path}}
         )
         
         self.device = self.accelerator.device
@@ -136,16 +135,15 @@ class Trainer:
                 if self.epoch % self.val_every == 0:
                     self.val()
                 
-                if self.epoch & self.save_every == 0:
+                if self.epoch % self.save_every == 0:
                     self.logger["model"](dict(lpips_model=self.accelerator.unwrap_model(self.lpips).state_dict(),
                                             model=self.accelerator.unwrap_model(self.model).state_dict(),
                                             optimizer=self.optimizer.state_dict(),
                                             epoch=self.epoch), f"checkpoint_ep{self.epoch}_gs{self.train_it.n}.ckpt")
         
         self.accelerator.wait_for_everyone()
-        self.logger["model"](dict(lpips_model=self.accelerator.unwrap_model(self.lpips).state_dict(),
-                                    model=self.accelerator.unwrap_model(self.model).state_dict(),
-                                    epoch=self.epoch), f"last.ckpt")
+        self.logger["model"](dict(model=self.accelerator.unwrap_model(self.model).state_dict(),
+                                 epoch=self.epoch), f"last.ckpt")
         self.accelerator.end_training()
             
     def _train(self, callbacks=None):
@@ -153,19 +151,19 @@ class Trainer:
         self.recover_loss.train()
         for itr, batch in enumerate(self.train_dl):
             itr_loss = {}
-            x0, condition, class_id = map(lambda attr: None if not batch.__contains__(attr) else batch[attr].to(self.device), ["mask", "image", "class"])
+            x0, class_id = map(lambda attr: None if not batch.__contains__(attr) else batch[attr], ["mask", "class"])
             context = self.context_encoder(batch.get("text"))
             
             x0 = self.x_encoder(x0).float()
-            t = torch.multinomial(torch.arange(self.timesteps + 1, device=self.device) ** 1.5, self.batch_size)
-            noise = OneHotCategoricalBCHW(torch.ones(x0.shape, device=self.device)).sample()
+            t = torch.multinomial(torch.arange(self.timesteps + 1, device=x0.device) ** 1.5, self.batch_size)
+            # noise = OneHotCategoricalBCHW(torch.ones(x0.shape, device=self.device)).sample()
             # q_xt = self.accelerator.unwrap_model(self.model).diffusion_model.q_xt_given_x0(x0, t, noise)
             xt = self.accelerator.unwrap_model(self.model).diffusion_model.q_xt_given_x0(x0, t).sample()
             # mod_q_xtm1_given_xt_x0 = self.accelerator.unwrap_model(self.model).diffusion_model.q_xtm1_given_xt_x0(x0, t, xt, noise)
             ret = self.model(xt.contiguous(),
                              self.condition_encoder(None), None, t,
                              context=context)
-            c_pred = ret["cond_pred_logits"]
+            # c_pred = ret["cond_pred_logits"]
             x0_pred = ret["diffusion_out"]
             
             loss_diffusion = self.kl_loss(xt, x0, x0_pred, t)
@@ -188,27 +186,30 @@ class Trainer:
             else: lr = self.optimizer.defaults['lr']
             
             global_step = itr + len(self.train_dl) * self.epoch
-            self.accelerator.wait_for_everyone()
             if self.accelerator.is_main_process:
-                if itr % self.train_vis_step == 0:
-                    image = self.logger["train"](dict(inputs=x0.argmax(1),
-                                                        xt=xt.argmax(1),
-                                                        t=str(t.cpu().numpy().tolist()),
-                                                        conditioning=str(batch.get("text")),
-                                                        samples=x0_pred.argmax(1)), f"train_ep{self.epoch}_gs{self.train_it.n}.png")
-                self.accelerator.log({"train/lr": lr,
-                                    "train/debug": x0_pred.argmax(1).max().item(),
-                                    "train/loss": loss.item(),
-                                    "train_diffusion_klloss": loss_diffusion.item(),
-                                    # "train/recloss": loss_recover.item(),
-                                    # "train/l1loss": loss_l1.item(),
-                                    # "train/crossentropyloss": loss_ce.item()
-                                    })
-                self.train_it.set_postfix(itr=global_step, **{k: f"{v.item():.2f}" for k, v in itr_loss.items()},
-                                        #   recovered_text=recovered_text,
-                                          debug=x0_pred.argmax(1).max().item())
-                self.train_it.update(self.accelerator.num_processes)
+                with torch.no_grad():
+                    if itr % self.train_vis_step == 0:
+                        self.logger["train"](dict(inputs=x0.cpu().argmax(1),
+                                                    xt=xt.cpu().argmax(1),
+                                                    t=str(t.cpu().numpy().tolist()),
+                                                    conditioning=str(batch.get("text")),
+                                                    samples=x0_pred.cpu().argmax(1)), f"train_ep{self.epoch}_gs{self.train_it.n}.png")
+                    self.accelerator.log({"train/lr": lr,
+                                        "train/debug": x0_pred.cpu().argmax(1).max().item(),
+                                        "train/loss": loss.item(),
+                                        "train_diffusion_klloss": loss_diffusion.item(),
+                                        # "train/recloss": loss_recover.item(),
+                                        # "train/l1loss": loss_l1.item(),
+                                        # "train/crossentropyloss": loss_ce.item()
+                                        })
+                    self.train_it.set_postfix(itr=global_step, **{k: f"{v.item():.2f}" for k, v in itr_loss.items()},
+                                            #   recovered_text=recovered_text,
+                                            debug=x0_pred.cpu().argmax(1).max().item())
+                    self.train_it.update(self.accelerator.num_processes)
+                    
+            gc.collect()
     
+    @torch.no_grad()
     def val(self, state_dict=None):
         model = self.accelerator.unwrap_model(self.model)
         if state_dict is not None: model.load_state_dict(state_dict)
@@ -219,7 +220,7 @@ class Trainer:
         val_loss = {k.__class__.__name__: 0 for k in [lpips, self.kl_loss]}
         
         for itr, batch in val_it:
-            x0, condition, class_id = map(lambda attr: None if not batch.__contains__(attr) else batch[attr].to(self.device), ["mask", "image", "class"])
+            x0, condition, class_id = map(lambda attr: None if not batch.__contains__(attr) else batch[attr], ["mask", "image", "class"])
             context = self.context_encoder(batch.get("text"))
             x0 = self.x_encoder(x0)
             x0_shape = (x0.shape[0], model.diffusion_model.num_classes, *x0.shape[2:])
@@ -248,8 +249,7 @@ class Trainer:
         if abs(new_best := val_loss["LPIPS"] / len(self.val_dl)) < self.best:
             print(f"best lpips for epoch {self.epoch}: {new_best:.2f}")
             self.best = new_best
-            self.logger["model"](dict(lpips_model=self.accelerator.unwrap_model(self.lpips).state_dict(),
-                                      model=self.accelerator.unwrap_model(self.model).state_dict(),
+            self.logger["model"](dict(model=self.accelerator.unwrap_model(self.model).state_dict(),
                                       optimizer=self.optimizer.state_dict(),
                                       epoch=self.epoch), f"best.ckpt")
         

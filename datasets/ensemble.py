@@ -4,7 +4,7 @@ import numpy as np
 import torchio as tio
 
 from torch.utils.data import default_collate, Dataset
-from datasets.utils import identity, LabelParser, OrganTypeBase, TorchioForegroundCropper, MSDDataset
+from datasets.utils import identity, LabelParser, OrganTypeBase, TorchioForegroundCropper, MSDDataset, TorchioBaseResizer
 from datasets.ruijin import Ruijin_3D_Mask
 from functools import reduce
 
@@ -55,33 +55,37 @@ class MSDDatasetForEnsemble(MSDDataset):
 class RuijinForEnsemble(Ruijin_3D_Mask):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        self.transforms["resize_base"] = TorchioBaseResizer()
         self.transforms["crop"] = TorchioForegroundCropper(crop_level="mask_foreground", 
                                                             crop_anchor="totalseg",
                                                             crop_kwargs=dict(foreground_hu_lb=1e-3,
                                                                                 foreground_mask_label=None,
                                                                                 outline=(0, 0, 0)))
         self.totalseg_parser = LabelParser(totalseg_version="v1")
-        self.load_fn = lambda x: sitk.GetArrayFromImage(sitk.ReadImage(x))
         
     def __getitem__(self, idx):
         item = self.data[self.split_keys[idx]] if isinstance(idx, int) else self.data[idx]
         data, totalseg, crcseg, text = map(lambda x: item[x], ["ct", "totalseg", "crcseg", "summary"])
+        spacing = self.get_spacing(data)
         image, mask, crcmask = map(self.load_fn, [data, totalseg, crcseg])
         
         if self.use_summary_level == "short": text = item.get("summary", "").split("；")[0]
         elif self.use_summary_level == "medium": text = item.get("summary", "")
         elif self.use_summary_level == "long": text = item.get("text", "")
         
-        subject = tio.Subject(image=tio.ScalarImage(tensor=image[None]), 
-                              mask=tio.ScalarImage(tensor=crcmask[None]),
-                              totalseg=tio.ScalarImage(tensor=mask[None]))
+        subject = tio.Subject(image=tio.ScalarImage(tensor=image[None], spacing=spacing), 
+                              mask=tio.LabelMap(tensor=crcmask[None], spacing=spacing),
+                              totalseg=tio.LabelMap(tensor=mask[None], spacing=spacing))
+        # resize based on spacing
+        subject = self.transforms["resize_base"](subject)
         # crop
         subject = self.transforms["crop"](subject)
+        ori_size = subject.image.data.shape
         # resize
         subject = self.transforms["resize"](subject)
         # random aug
         subject = self.transforms.get("augmentation", tio.Lambda(identity))(subject)
-        subject = {k: v.data for k, v in subject.items()} | {"text": text, "casename": self.split_keys[idx] if isinstance(idx, int) else idx}
+        subject = {k: v.data for k, v in subject.items()} | {"text": text, "casename": self.split_keys[idx] if isinstance(idx, int) else idx, "ori_size": ori_size}
         
         subject["totalseg"] = self.totalseg_parser.totalseg2mask(subject["totalseg"], OrganType)
         return subject

@@ -181,6 +181,30 @@ def load_or_write_split(basefolder, force=False, **splits):
     return splits
 
 
+class TorchioBaseResizer(tio.transforms.Transform):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+    
+    @staticmethod
+    def _interpolate(x, scale_coef, mode="trilinear"):
+        x_rsz = torch.nn.functional.interpolate(x[None].float(), scale_factor=scale_coef, mode=mode)[0]
+        if mode == "nearest":
+            x_rsz = x_rsz.round()
+        return x_rsz
+        
+    def apply_transform(self, data: tio.Subject):
+        # data: c h w d
+        subject_ = {k: v.data for k, v in data.items()}
+        type_ = {k: v.type for k, v in data.items()}
+        class_ = {k: tio.ScalarImage if isinstance(v, tio.ScalarImage) else tio.LabelMap for k, v in data.items()}
+        
+        local_spacing = np.array(data[list(subject_.keys())[0]]["spacing"])
+        scale_coef = tuple(local_spacing / local_spacing.mean())[::-1]
+        
+        subject_ = {k: class_[k](tensor=self._interpolate(v, scale_coef, mode="nearest" if type_[k] == "label" else "trilinear"), type=type_[k]) for k, v in subject_.items()}
+        return tio.Subject(subject_)
+
+
 class TorchioForegroundCropper(tio.transforms.Transform):
     def __init__(self, crop_level="all", crop_kwargs=None, crop_anchor=None,
                  *args, **kwargs):
@@ -245,7 +269,9 @@ class TorchioForegroundCropper(tio.transforms.Transform):
 class MSDDataset(Dataset):
     def __init__(self, base_folder, mapping={}, split="train", max_size=None, resize_to=(96,)*3, force_rewrite_split=False, info={}):
         self.load_fn = lambda x: sitk.GetArrayFromImage(sitk.ReadImage(x))
+        self.get_spacing = lambda x: sitk.ReadImage(x).GetSpacing()
         self.transforms = dict(
+            resize_base=TorchioBaseResizer(),
             resize=tio.Resize(resize_to) if resize_to is not None else tio.Lambda(identity),
             crop=TorchioForegroundCropper(crop_level="mask_foreground", 
                                           crop_anchor="totalseg",
@@ -283,14 +309,19 @@ class MSDDataset(Dataset):
         
         if self.split in ["train", "val"]:
             image, mask, totalseg = map(lambda x: self.load_fn(os.path.join(self.base_folder, x, item)), ["imagesTr", "labelsTr", "totalsegTr"])
-            subject = tio.Subject(image=tio.ScalarImage(tensor=image[None]), 
-                                  mask=tio.LabelMap(tensor=mask[None]),
-                                  totalseg=tio.LabelMap(tensor=totalseg[None]))
+            spacing = self.get_spacing(os.path.join(self.base_folder, "labelsTr", item))
+            subject = tio.Subject(image=tio.ScalarImage(tensor=image[None], spacing=spacing), 
+                                  mask=tio.LabelMap(tensor=mask[None], spacing=spacing),
+                                  totalseg=tio.LabelMap(tensor=totalseg[None], spacing=spacing))
         if self.split == "test":
             image = self.load_fn(os.path.join(self.base_folder, "imagesTs", item))
-            subject = tio.Subject(image=tio.ScalarImage(tensor=image[None]))
+            spacing = self.get_spacing(os.path.join(self.base_folder, "imagesTs", item))
+            subject = tio.Subject(image=tio.ScalarImage(tensor=image[None], spacing=spacing))
+        # resize based on spacing
+        subject = self.transforms["resize_base"](subject)
         # crop
         subject = self.transforms["crop"](subject)
+        ori_size = subject.image.data.shape
         # normalize
         subject = self.transforms["normalize_image"](subject)
         subject = self.transforms["normalize_mask"](subject)
@@ -298,7 +329,6 @@ class MSDDataset(Dataset):
         subject = self.transforms["resize"](subject)
         # random aug
         subject = self.transforms.get("augmentation", tio.Lambda(identity))(subject)
-        subject = {k: v.data for k, v in subject.items()} | {"ids": idx, 'casename': self.split_keys[idx]  if isinstance(idx, int) else idx}
+        subject = {k: v.data for k, v in subject.items()} | {"ids": idx, 'casename': self.split_keys[idx] if isinstance(idx, int) else idx, "ori_size": ori_size}
 
         return subject
-

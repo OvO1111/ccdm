@@ -4,19 +4,19 @@ dataset:
     params:
       split: train
       max_size: null
-      resize_to: [64, 128, 128]
+      resize_to: [128, 128, 128]
   validation:
     target: datasets.ensemble.EnsembleDataset
     params:
       split: val
       max_size: 5
-      resize_to: [64, 128, 128]
+      resize_to: [128, 128, 128]
   test:
     target: datasets.ensemble.EnsembleDataset
     params:
       split: test
       max_size: 8
-      resize_to: [64, 128, 128]
+      resize_to: [128, 128, 128]
 
 model:
   target: train.ccdm.CategoricalDiffusionModel
@@ -29,12 +29,12 @@ model:
         target: ddpm.models.unet_openai.unet.UNetModel
         params:
           model_channels: 64
-          num_res_blocks: 2
+          num_res_blocks: 1
           cond_encoded_shape: null
           num_heads: 1
           num_head_channels: 32
-          channel_mult: [1, 2, 2, 4, 8]
-          attention_resolutions: [32, 16, 8]
+          channel_mult: [1, 1, 2, 2, 4]
+          attention_resolutions: [8, 16]
           use_checkpoint: true
           dims: 3
           use_spatial_transformer: true
